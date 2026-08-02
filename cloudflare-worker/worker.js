@@ -95,6 +95,10 @@ async function handleGet(request, env) {
   let lastUpdate = "NO_UPDATE_RECEIVED_YET";
   try { if (lastUpdateRaw) lastUpdate = JSON.parse(lastUpdateRaw); } catch (_) {}
 
+  const lastSendRaw = await kv.get(env, "debug_last_send_result");
+  let lastSend = "NO_SEND_LOGGED_YET";
+  try { if (lastSendRaw) lastSend = JSON.parse(lastSendRaw); } catch (_) {}
+
   return new Response(JSON.stringify({
     ads_enabled:           adsEnabled,
     app_open_ads_enabled:  appOpenEnabled,
@@ -105,6 +109,7 @@ async function handleGet(request, env) {
     debug_kv_status:       getKV(env) ? "KV_BOUND" : "KV_NOT_BOUND",
     debug_bot_token_status: env?.BOT_TOKEN ? `SET (len:${env.BOT_TOKEN.length})` : "NOT_SET",
     debug_last_update:     lastUpdate,
+    debug_last_send_result: lastSend,
   }), {
     headers: {
       "Content-Type":                "application/json",
@@ -379,6 +384,13 @@ async function sendMsg(env, chatId, text, keyboard) {
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify(body),
     });
+    const resText = await res.text();
+    await kv.put(env, "debug_last_send_result", JSON.stringify({
+      status: res.status,
+      ok: res.ok,
+      response: resText,
+      apiUrl: getTelegramApi(env)
+    })).catch(() => {});
     if (!res.ok) {
       delete body.parse_mode;
       await fetch(`${getTelegramApi(env)}/sendMessage`, {
@@ -388,6 +400,9 @@ async function sendMsg(env, chatId, text, keyboard) {
       });
     }
   } catch (e) {
+    await kv.put(env, "debug_last_send_result", JSON.stringify({
+      error: String(e)
+    })).catch(() => {});
     console.error("sendMsg error:", e);
   }
 }
