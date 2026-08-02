@@ -142,9 +142,9 @@ async function handlePost(request, env) {
   const update = await request.json().catch(() => null);
   if (!update) return new Response("OK");
 
-  const msg        = update.message || update.callback_query?.message;
+  const msg        = update.message || update.callback_query?.message || update.edited_message;
   const chatId     = msg?.chat?.id;
-  const fromUser   = update.message?.from || update.callback_query?.from;
+  const fromUser   = update.message?.from || update.callback_query?.from || update.edited_message?.from;
   const userId     = fromUser?.id;
 
   if (!chatId || !userId) return new Response("OK");
