@@ -91,6 +91,10 @@ async function handleGet(request, env) {
   const appOpenEnabled  = appOpenRaw  !== null ? appOpenRaw  !== "false" : adsEnabled;
   const rewardedEnabled = rewardedRaw !== null ? rewardedRaw !== "false" : adsEnabled;
 
+  const lastUpdateRaw = await kv.get(env, "debug_last_update");
+  let lastUpdate = "NO_UPDATE_RECEIVED_YET";
+  try { if (lastUpdateRaw) lastUpdate = JSON.parse(lastUpdateRaw); } catch (_) {}
+
   return new Response(JSON.stringify({
     ads_enabled:           adsEnabled,
     app_open_ads_enabled:  appOpenEnabled,
@@ -100,6 +104,7 @@ async function handleGet(request, env) {
     privacy_url:           privacyURL   || "",
     debug_kv_status:       getKV(env) ? "KV_BOUND" : "KV_NOT_BOUND",
     debug_bot_token_status: env?.BOT_TOKEN ? `SET (len:${env.BOT_TOKEN.length})` : "NOT_SET",
+    debug_last_update:     lastUpdate,
   }), {
     headers: {
       "Content-Type":                "application/json",
@@ -141,6 +146,14 @@ async function trackEvent(env, event, uuid) {
 async function handlePost(request, env) {
   const update = await request.json().catch(() => null);
   if (!update) return new Response("OK");
+
+  // 📝 Realtime Debug Log: Save last update received to KV
+  try {
+    await kv.put(env, "debug_last_update", JSON.stringify({
+      time: new Date().toISOString(),
+      update: update
+    }));
+  } catch (_) {}
 
   const msg        = update.message || update.callback_query?.message || update.edited_message;
   const chatId     = msg?.chat?.id;
