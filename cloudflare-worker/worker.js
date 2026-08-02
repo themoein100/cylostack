@@ -5,7 +5,7 @@
 
 // Telegram Bot API Helper
 function getTelegramApi(env) {
-  const token = env?.BOT_TOKEN || "";
+  const token = (env?.BOT_TOKEN || "").trim();
   return `https://api.telegram.org/bot${token}`;
 }
 
@@ -359,22 +359,48 @@ async function sendMsg(env, chatId, text, keyboard) {
   };
   if (keyboard) body.reply_markup = { keyboard, resize_keyboard: true };
 
-  await fetch(`${getTelegramApi(env)}/sendMessage`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify(body),
-  });
+  try {
+    const res = await fetch(`${getTelegramApi(env)}/sendMessage`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify(body),
+    });
+    if (!res.ok) {
+      delete body.parse_mode;
+      await fetch(`${getTelegramApi(env)}/sendMessage`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(body),
+      });
+    }
+  } catch (e) {
+    console.error("sendMsg error:", e);
+  }
 }
 
 async function sendForceReply(env, chatId, text) {
-  await fetch(`${getTelegramApi(env)}/sendMessage`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({
-      chat_id:      chatId,
-      text:         text,
-      parse_mode:   "Markdown",
-      reply_markup: { force_reply: true, selective: true },
-    }),
-  });
+  const body = {
+    chat_id:      chatId,
+    text:         text,
+    parse_mode:   "Markdown",
+    reply_markup: { force_reply: true, selective: true },
+  };
+
+  try {
+    const res = await fetch(`${getTelegramApi(env)}/sendMessage`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify(body),
+    });
+    if (!res.ok) {
+      delete body.parse_mode;
+      await fetch(`${getTelegramApi(env)}/sendMessage`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(body),
+      });
+    }
+  } catch (e) {
+    console.error("sendForceReply error:", e);
+  }
 }
