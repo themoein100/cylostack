@@ -99,6 +99,7 @@ async function handleGet(request, env) {
     appstore_url:          appstoreURL  || "",
     privacy_url:           privacyURL   || "",
     debug_kv_status:       getKV(env) ? "KV_BOUND" : "KV_NOT_BOUND",
+    debug_bot_token_status: env?.BOT_TOKEN ? `SET (len:${env.BOT_TOKEN.length})` : "NOT_SET",
   }), {
     headers: {
       "Content-Type":                "application/json",
