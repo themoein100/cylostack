@@ -150,6 +150,7 @@ async function trackEvent(env, event, uuid) {
 // ════════════════════════════════════════════════════════════════════
 async function handlePost(request, env) {
   const update = await request.json().catch(() => null);
+  console.log("=== TELEGRAM WEBHOOK RECEIVED ===", JSON.stringify(update));
   if (!update) return new Response("OK");
 
   // 📝 Realtime Debug Log: Save last update received to KV
@@ -162,14 +163,22 @@ async function handlePost(request, env) {
 
   const msg        = update.message || update.callback_query?.message || update.edited_message;
   const chatId     = msg?.chat?.id;
-  const fromUser   = update.message?.from || update.callback_query?.from || update.edited_message?.from;
+  const fromUser   = update.message?.from || update.callback_query?.from || update.edited_message?.from || msg?.from || update.from;
   const userId     = fromUser?.id;
 
-  if (!chatId || !userId) return new Response("OK");
+  console.log(`[DEBUG] chatId: ${chatId}, userId: ${userId}, text: ${msg?.text || update.callback_query?.data}`);
+
+  if (!chatId || !userId) {
+    console.log("[DEBUG] Skipping: missing chatId or userId");
+    return new Response("OK");
+  }
 
   // 🔒 Security Barrier: Block non-admin users
   const authorized = await isAdmin(env, userId);
+  console.log(`[DEBUG] userId ${userId} isAdmin: ${authorized}`);
+
   if (!authorized) {
+    console.log(`[DEBUG] User ${userId} unauthorized!`);
     await sendMsg(env, chatId, `⛔️ *دسترسی غیرمجاز!*\n\nآیدی تلگرام شما (\`${userId}\`) در لیست مدیران تاییدشده ثبت نشده است.`);
     return new Response("OK");
   }
