@@ -379,13 +379,21 @@ async function sendMenu(env, chatId, headerMsg) {
 // ════════════════════════════════════════════════════════════════════
 //  Telegram API Helpers
 // ════════════════════════════════════════════════════════════════════
-async function sendMsg(env, chatId, text, keyboard) {
+async function sendMsg(env, chatId, text, replyMarkup) {
   const body = {
     chat_id:    chatId,
     text:       text,
     parse_mode: "Markdown",
   };
-  if (keyboard) body.reply_markup = { keyboard, resize_keyboard: true };
+  if (replyMarkup) {
+    if (Array.isArray(replyMarkup)) {
+      body.reply_markup = { keyboard: replyMarkup, resize_keyboard: true };
+    } else if (replyMarkup.keyboard && Array.isArray(replyMarkup.keyboard)) {
+      body.reply_markup = replyMarkup;
+    } else {
+      body.reply_markup = { keyboard: replyMarkup, resize_keyboard: true };
+    }
+  }
 
   try {
     const res = await fetch(`${getTelegramApi(env)}/sendMessage`, {
