@@ -38,19 +38,75 @@ class SoundManager {
         configureAudioSession()
         setupAudioEngine()
         synthesizeBuffers()
-        
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleAppDidBecomeActive),
             name: UIApplication.didBecomeActiveNotification,
             object: nil
         )
+
+        // A phone call, Siri, or a full-screen ad stops the engine. Without these two
+        // observers it never starts again and the game stays silent for the rest of
+        // the session.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleEngineConfigurationChange),
+            name: .AVAudioEngineConfigurationChange,
+            object: engine
+        )
     }
-    
+
     @objc private func handleAppDidBecomeActive() {
         configureAudioSession()
+        restartEngineIfNeeded()
     }
-    
+
+    @objc private func handleInterruption(_ notification: Notification) {
+        guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+
+        switch type {
+        case .began:
+            Logger.shared.i("SoundManager", "Audio interrupted — engine paused")
+        case .ended:
+            configureAudioSession()
+            restartEngineIfNeeded()
+        @unknown default:
+            break
+        }
+    }
+
+    /// The engine drops its render state when the hardware route changes (headphones
+    /// in or out, an ad taking over the session). Rebuilding it is the documented
+    /// recovery.
+    @objc private func handleEngineConfigurationChange() {
+        restartEngineIfNeeded()
+    }
+
+    /// Brings the engine back up after anything that stopped it. Cheap and safe to
+    /// call when the engine is already running.
+    private func restartEngineIfNeeded() {
+        guard let engine = engine, !engine.isRunning else { return }
+        do {
+            try engine.start()
+            Logger.shared.i("SoundManager", "Audio engine restarted")
+        } catch {
+            Logger.shared.e("SoundManager", "Could not restart audio engine: \(error.localizedDescription)")
+        }
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     func configureAudioSession() {
         do {
             let session = AVAudioSession.sharedInstance()
@@ -78,7 +134,7 @@ class SoundManager {
         do {
             try engine.start()
         } catch {
-            print("Failed to start audio engine: \(error)")
+            Logger.shared.e("SoundManager", "Failed to start audio engine: \(error.localizedDescription)")
         }
     }
     
@@ -164,8 +220,12 @@ class SoundManager {
     
     // Play buffer using player pool
     private func play(_ buffer: AVAudioPCMBuffer?) {
-        guard let buffer = buffer, !isMuted else { return }
-        
+        guard let buffer = buffer, !isMuted, !playerNodes.isEmpty else { return }
+
+        // Scheduling onto a stopped engine is a silent no-op, so recover first.
+        restartEngineIfNeeded()
+        guard engine?.isRunning == true else { return }
+
         // Select next player in pool to allow overlap
         let playerNode = playerNodes[activePlayerIndex]
         activePlayerIndex = (activePlayerIndex + 1) % playerPoolSize

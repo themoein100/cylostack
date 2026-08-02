@@ -18,13 +18,8 @@ struct SettingsTab: View {
                 difficultySection
                 recordsSection
                 materialsSection
-                if !remoteConfig.privacyURL.isEmpty {
-                    Rectangle()
-                        .fill(Color.white.opacity(0.08))
-                        .frame(height: 1)
-                        .padding(.horizontal, 4)
-                    legalSection
-                }
+                // Legal lives in the app's Settings sheet, not in this tab — this tab
+                // is only about how the game plays.
                 Color.clear.frame(height: 90) // clears the floating tab bar
             }
             .padding(.horizontal, 20)
@@ -152,46 +147,6 @@ struct SettingsTab: View {
                     }
                 }
             }
-        }
-    }
-
-    // MARK: - Legal
-
-    private var legalSection: some View {
-        Card(title: "Legal", subtitle: "Privacy and terms of use") {
-            Button(action: {
-                if let url = URL(string: remoteConfig.privacyURL),
-                   UIApplication.shared.canOpenURL(url) {
-                    UIApplication.shared.open(url)
-                }
-            }) {
-                HStack(spacing: 12) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.blue.opacity(0.15))
-                            .frame(width: 36, height: 36)
-                        Image(systemName: "lock.shield.fill")
-                            .font(.system(size: 16))
-                            .foregroundColor(.blue)
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Privacy Policy")
-                            .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                            .foregroundColor(.white)
-                        Text("View our privacy & data policy")
-                            .font(.system(size: 11, design: .rounded))
-                            .foregroundColor(.white.opacity(0.45))
-                    }
-
-                    Spacer()
-
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.3))
-                }
-            }
-            .buttonStyle(.plain)
         }
     }
 

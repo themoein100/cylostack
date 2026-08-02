@@ -18,6 +18,13 @@ struct GameTab: View {
     @StateObject private var viewModel: GameViewModel
     @State private var showSettings = false
 
+    // The revive and free-coin buttons are derived from these three singletons. Without
+    // observing them the buttons keep their stale state when the Telegram panel toggles
+    // ads, when an ad finishes loading, or when the device drops offline.
+    @ObservedObject private var adManager = AdMobManager.shared
+    @ObservedObject private var remoteConfig = RemoteConfigManager.shared
+    @ObservedObject private var network = NetworkMonitor.shared
+
     init(store: PlayerStore, selectedBg: BgTheme, isRunActive: Binding<Bool>) {
         self.store = store
         self.selectedBg = selectedBg

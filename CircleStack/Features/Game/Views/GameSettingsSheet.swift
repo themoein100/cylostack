@@ -35,6 +35,9 @@ struct GameSettingsSheet: View {
                     VStack(spacing: 24) {
                         soundSection
                         leaderboardSection
+                        if !remoteConfig.privacyURL.isEmpty {
+                            legalSection
+                        }
                         supportSection
                         coinGuideSection
                         Color.clear.frame(height: 20)
@@ -211,6 +214,55 @@ struct GameSettingsSheet: View {
         }
     }
 
+    // MARK: - Legal Section
+
+    /// Sits directly under Rankings: it belongs to the app, not to how the game plays,
+    /// so this sheet is its one home. App Review looks for it here too.
+    private var legalSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            sectionHeader(icon: "lock.shield.fill", title: "Legal", color: .blue)
+
+            settingsCard {
+                Button(action: {
+                    SoundManager.shared.playGood()
+                    if let url = URL(string: remoteConfig.privacyURL),
+                       UIApplication.shared.canOpenURL(url) {
+                        UIApplication.shared.open(url)
+                    }
+                }) {
+                    HStack(spacing: 14) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.blue.opacity(0.18))
+                                .frame(width: 40, height: 40)
+                            Image(systemName: "lock.shield.fill")
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundColor(.blue)
+                        }
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Privacy Policy")
+                                .font(.system(.body, design: .rounded).weight(.semibold))
+                                .foregroundColor(.white)
+                            Text("How your data is handled")
+                                .font(.system(.caption, design: .rounded))
+                                .foregroundColor(.white.opacity(0.45))
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.white.opacity(0.25))
+                    }
+                    .padding(.vertical, 14)
+                    .padding(.horizontal, 16)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
     // MARK: - Coin Guide Section
 
     private var coinGuideSection: some View {
@@ -347,47 +399,8 @@ struct GameSettingsSheet: View {
                     }
                     .buttonStyle(.plain)
 
-                    if !remoteConfig.privacyURL.isEmpty {
-                        Divider().background(Color.white.opacity(0.07)).padding(.horizontal, 16)
-
-                        // Privacy Policy
-                        Button(action: {
-                            SoundManager.shared.playGood()
-                            if let url = URL(string: remoteConfig.privacyURL),
-                               UIApplication.shared.canOpenURL(url) {
-                                UIApplication.shared.open(url)
-                            }
-                        }) {
-                            HStack(spacing: 14) {
-                                ZStack {
-                                    Circle()
-                                        .fill(Color.purple.opacity(0.18))
-                                        .frame(width: 40, height: 40)
-                                    Image(systemName: "lock.shield.fill")
-                                        .font(.system(size: 17, weight: .semibold))
-                                        .foregroundColor(.purple)
-                                }
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Privacy Policy")
-                                        .font(.system(.body, design: .rounded).weight(.semibold))
-                                        .foregroundColor(.white)
-                                    Text("View privacy and data policy")
-                                        .font(.system(.caption, design: .rounded))
-                                        .foregroundColor(.white.opacity(0.45))
-                                }
-
-                                Spacer()
-
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 14, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.25))
-                            }
-                            .padding(.vertical, 14)
-                            .padding(.horizontal, 16)
-                        }
-                        .buttonStyle(.plain)
-                    }
+                    // The privacy link lives in Settings ▸ Legal only, so there is exactly
+                    // one place in the app that owns it.
                 }
             }
         }

@@ -8,3 +8,14 @@ xcuserdata/
 *.xcuserdatad
 .env
 .dev.vars
+
+# Wrangler local state
+cloudflare-worker/.wrangler/
+cloudflare-worker/.dev.vars
+
+# App secret — real value never enters the repo
+CircleStack/Core/Services/RemoteConfig/Secrets.swift
+cloudflare-worker/kv-backup-old-account.json
+
+# Wrangler cache at repo root
+.wrangler/

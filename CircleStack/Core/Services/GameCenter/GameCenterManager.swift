@@ -215,7 +215,7 @@ class GameCenterManager: NSObject, ObservableObject {
 
                 for entry in entries {
                     group.enter()
-                    
+
                     let newEntry = LeaderboardEntry(
                         rank: entry.rank,
                         displayName: entry.player.displayName,
@@ -223,16 +223,22 @@ class GameCenterManager: NSObject, ObservableObject {
                         avatarImage: nil
                     )
 
-                    entry.player.loadPhoto(for: .small) { image, _ in
-                        var entryWithPhoto = newEntry
-                        if let image = image {
-                            entryWithPhoto.avatarImage = image
-                        }
+                    // Game Center occasionally never calls back for a photo. Balance
+                    // the group exactly once either way, or the board spins forever.
+                    var hasResumed = false
+                    let resume: (UIImage?) -> Void = { image in
                         DispatchQueue.main.async {
+                            guard !hasResumed else { return }
+                            hasResumed = true
+                            var entryWithPhoto = newEntry
+                            entryWithPhoto.avatarImage = image
                             fetchedEntries.append(entryWithPhoto)
                             group.leave()
                         }
                     }
+
+                    entry.player.loadPhoto(for: .small) { image, _ in resume(image) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { resume(nil) }
                 }
 
                 group.notify(queue: .main) {

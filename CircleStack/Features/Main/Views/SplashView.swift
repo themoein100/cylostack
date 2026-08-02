@@ -8,13 +8,27 @@
 import SwiftUI
 
 struct SplashView: View {
-    @Binding var isFinished: Bool
-    
+    /// True while the splash is on screen. Set to false to dismiss it.
+    @Binding var isPresented: Bool
+
     @State private var isAnimating = false
-    @State private var rotation = 0.0
     @State private var opacity = 0.0
     @State private var hasTriggeredAd = false
-    
+    @State private var hasDismissed = false
+
+    /// Nothing on the startup path may keep the player at the splash forever. The
+    /// consent form, the SDK, or the network can all stall without calling back,
+    /// so this is the hard ceiling on how long startup can take.
+    private let startupFailsafe: TimeInterval = 10.0
+
+    private func dismiss() {
+        guard !hasDismissed else { return }
+        hasDismissed = true
+        withAnimation(.easeOut(duration: 0.5)) {
+            isPresented = false
+        }
+    }
+
     var body: some View {
         ZStack {
             // Ultra-dark background
@@ -65,11 +79,6 @@ struct SplashView: View {
             guard !hasTriggeredAd else { return }
             hasTriggeredAd = true
 
-            // Rotation animation (slow)
-            withAnimation(.linear(duration: 8.0).repeatForever(autoreverses: false)) {
-                rotation = 360.0
-            }
-            
             // Pulse & slide up animation
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
                 isAnimating = true
@@ -82,27 +91,31 @@ struct SplashView: View {
             
             // Fetch remote config in background, handle GDPR, then launch app!
             RemoteConfigManager.shared.fetchRemoteConfig()
-            
+
+            // Runs whatever else happens above — the player always reaches the game.
+            DispatchQueue.main.asyncAfter(deadline: .now() + startupFailsafe) {
+                if !hasDismissed {
+                    Logger.shared.w("Splash", "Startup failsafe fired after \(startupFailsafe)s")
+                    dismiss()
+                }
+            }
+
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                 AdMobManager.shared.requestGDPRConsentIfNeeded {
-                    if RemoteConfigManager.shared.areAdsEnabled && RemoteConfigManager.shared.isAppOpenAdEnabled {
-                        AdMobManager.shared.waitForAppOpenAdOrTimeout(maxWaitDuration: 4.0) { hasAd in
-                            if hasAd {
-                                AdMobManager.shared.showAppOpenAd {
-                                    withAnimation(.easeOut(duration: 0.5)) {
-                                        isFinished = false
-                                    }
-                                }
-                            } else {
-                                withAnimation(.easeOut(duration: 0.5)) {
-                                    isFinished = false
-                                }
-                            }
+                    let wantsAppOpenAd = RemoteConfigManager.shared.areAdsEnabled
+                        && RemoteConfigManager.shared.isAppOpenAdEnabled
+
+                    guard wantsAppOpenAd else {
+                        dismiss()
+                        return
+                    }
+
+                    AdMobManager.shared.waitForAppOpenAdOrTimeout(maxWaitDuration: 4.0) { hasAd in
+                        guard hasAd else {
+                            dismiss()
+                            return
                         }
-                    } else {
-                        withAnimation(.easeOut(duration: 0.5)) {
-                            isFinished = false
-                        }
+                        AdMobManager.shared.showAppOpenAd { dismiss() }
                     }
                 }
             }

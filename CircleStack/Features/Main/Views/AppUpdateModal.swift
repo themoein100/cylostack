@@ -64,7 +64,7 @@ struct AppUpdateModal: View {
                 }
 
                 // Description
-                Text("A new version of CircleStack is available with exciting new features & improvements!")
+                Text("A new version of CyloStack is available with exciting new features & improvements!")
                     .font(.system(size: 14, design: .rounded))
                     .foregroundColor(.white.opacity(0.8))
                     .multilineTextAlignment(.center)
@@ -108,57 +108,47 @@ struct AppUpdateModal: View {
                         .shadow(color: Color(hex: "00FFCC").opacity(0.4), radius: 10, y: 4)
                     }
 
-                    // 2. LATER (Snooze 3 Days)
-                    Button(action: {
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            remoteConfig.snoozeUpdate(days: 3)
-                        }
-                    }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "clock.arrow.circlepath")
-                                .font(.system(size: 14, weight: .semibold))
-                            Text("Remind Me Later (3 Days)")
-                                .font(.system(size: 14, weight: .bold, design: .rounded))
-                        }
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(Color.white.opacity(0.12))
-                        .cornerRadius(16)
-                    }
-
-                    // 3. CANCEL (Snooze 2 Days)
-                    Button(action: {
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            remoteConfig.snoozeUpdate(days: 2)
-                        }
-                    }) {
-                        Text("Cancel (Remind in 2 Days)")
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .foregroundColor(.white.opacity(0.6))
-                            .padding(.vertical, 4)
-                    }
-
-                    // 4. Privacy Policy Link (Optional)
-                    if !remoteConfig.privacyURL.isEmpty {
+                    // Snooze options are hidden when the update is forced from the panel.
+                    //
+                    // The snooze length is deliberately not in the labels. Telling the
+                    // player "3 days" invites them to plan around the reminder instead
+                    // of updating; the wording says what the button does and nothing
+                    // about when the prompt comes back.
+                    if !remoteConfig.isForceUpdateEnabled {
+                        // 2. LATER (snoozes 3 days)
                         Button(action: {
-                            if let urlString = remoteConfig.privacyURL.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-                               let url = URL(string: urlString),
-                               UIApplication.shared.canOpenURL(url) {
-                                UIApplication.shared.open(url)
+                            withAnimation(.easeOut(duration: 0.25)) {
+                                remoteConfig.snoozeUpdate(days: 3)
                             }
                         }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "lock.shield.fill")
-                                    .font(.system(size: 11))
-                                Text("Privacy Policy")
-                                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                                    .underline()
+                            HStack(spacing: 6) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text("Remind Me Later")
+                                    .font(.system(size: 14, weight: .bold, design: .rounded))
                             }
-                            .foregroundColor(.white.opacity(0.45))
-                            .padding(.top, 4)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color.white.opacity(0.12))
+                            .cornerRadius(16)
+                        }
+
+                        // 3. CANCEL (snoozes 2 days)
+                        Button(action: {
+                            withAnimation(.easeOut(duration: 0.25)) {
+                                remoteConfig.snoozeUpdate(days: 2)
+                            }
+                        }) {
+                            Text("Not Now")
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundColor(.white.opacity(0.6))
+                                .padding(.vertical, 4)
                         }
                     }
+
+                    // The privacy link lives in Settings ▸ Legal only, so there is exactly
+                    // one place in the app that owns it.
                 }
                 .padding(.top, 8)
             }

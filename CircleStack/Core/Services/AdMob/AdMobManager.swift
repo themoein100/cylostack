@@ -52,36 +52,113 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
+    /// Waits for a `@Published` readiness flag to flip true, or gives up after
+    /// `timeout`. Whichever happens first, the timer is invalidated and the
+    /// subscription is torn down — the earlier version stored every wait in
+    /// `cancellables` and never removed it, so the set grew for the whole session.
+    private func awaitReady(
+        _ publisher: Published<Bool>.Publisher,
+        isAlreadyReady: @autoclosure () -> Bool,
+        startLoading: () -> Void,
+        timeout: TimeInterval,
+        label: String,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard NetworkMonitor.shared.isConnected else {
+            completion(false)
+            return
+        }
+
+        if isAlreadyReady() {
+            completion(true)
+            return
+        }
+
+        startLoading()
+
+        var hasFinished = false
+        var subscription: AnyCancellable?
+        var timer: Timer?
+
+        // Runs exactly once, from whichever path gets there first.
+        let finish: (Bool) -> Void = { [weak self] ready in
+            guard !hasFinished else { return }
+            hasFinished = true
+            timer?.invalidate()
+            if let subscription = subscription {
+                self?.cancellables.remove(subscription)
+                subscription.cancel()
+            }
+            completion(ready)
+        }
+
+        subscription = publisher
+            .dropFirst()
+            .filter { $0 }
+            .first()
+            .receive(on: DispatchQueue.main)
+            .sink { _ in
+                Logger.shared.i("AdMobManager", "\(label) loaded during wait window")
+                finish(true)
+            }
+
+        if let subscription = subscription {
+            cancellables.insert(subscription)
+        }
+
+        timer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { _ in
+            Logger.shared.i("AdMobManager", "\(label) wait timed out after \(timeout)s")
+            finish(false)
+        }
+    }
+
     override init() {
         super.init()
 
+        // Each ad format is gated by the global switch AND its own remote flag,
+        // so the Telegram panel can turn a single format off independently.
+        let interstitialRemote = Publishers.CombineLatest(
+            RemoteConfigManager.shared.$areAdsEnabled,
+            RemoteConfigManager.shared.$isInterstitialAdEnabled
+        ).map { global, specific in global && specific }
+
+        let rewardedRemote = Publishers.CombineLatest(
+            RemoteConfigManager.shared.$areAdsEnabled,
+            RemoteConfigManager.shared.$isRewardedAdEnabled
+        ).map { global, specific in global && specific }
+
+        let appOpenRemote = Publishers.CombineLatest(
+            RemoteConfigManager.shared.$areAdsEnabled,
+            RemoteConfigManager.shared.$isAppOpenAdEnabled
+        ).map { global, specific in global && specific }
+
         // Listen to Network changes & Remote Config & update availability reactively
-        Publishers.CombineLatest3($isAdReady, NetworkMonitor.shared.$isConnected, RemoteConfigManager.shared.$areAdsEnabled)
+        Publishers.CombineLatest3($isAdReady, NetworkMonitor.shared.$isConnected, interstitialRemote)
             .map { ready, connected, remoteEnabled in ready && connected && remoteEnabled }
             .receive(on: DispatchQueue.main)
             .assign(to: &$isAdAvailable)
 
-        Publishers.CombineLatest3($isRewardedAdReady, NetworkMonitor.shared.$isConnected, RemoteConfigManager.shared.$areAdsEnabled)
+        Publishers.CombineLatest3($isRewardedAdReady, NetworkMonitor.shared.$isConnected, rewardedRemote)
             .map { ready, connected, remoteEnabled in ready && connected && remoteEnabled }
             .receive(on: DispatchQueue.main)
             .assign(to: &$isRewardedAdAvailable)
 
-        Publishers.CombineLatest3($isAppOpenAdReady, NetworkMonitor.shared.$isConnected, RemoteConfigManager.shared.$areAdsEnabled)
+        Publishers.CombineLatest3($isAppOpenAdReady, NetworkMonitor.shared.$isConnected, appOpenRemote)
             .map { ready, connected, remoteEnabled in ready && connected && remoteEnabled }
             .receive(on: DispatchQueue.main)
             .assign(to: &$isAppOpenAdAvailable)
 
         // دکمه تبلیغ: فقط نیاز به اینترنت + ریموت دارد (نیازی به لود بودن تبلیغ نیست)
-        Publishers.CombineLatest(NetworkMonitor.shared.$isConnected, RemoteConfigManager.shared.$areAdsEnabled)
+        Publishers.CombineLatest(NetworkMonitor.shared.$isConnected, interstitialRemote)
             .map { connected, remoteEnabled in connected && remoteEnabled }
             .receive(on: DispatchQueue.main)
             .assign(to: &$isAdButtonVisible)
 
-        Publishers.CombineLatest(NetworkMonitor.shared.$isConnected, RemoteConfigManager.shared.$areAdsEnabled)
+        Publishers.CombineLatest(NetworkMonitor.shared.$isConnected, rewardedRemote)
             .map { connected, remoteEnabled in connected && remoteEnabled }
             .receive(on: DispatchQueue.main)
             .assign(to: &$isRewardedAdButtonVisible)
-        
+
         // Auto-retry ad loading when network re-connects
         NetworkMonitor.shared.$isConnected
             .dropFirst()
@@ -178,6 +255,13 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
     }
 
     func showInterstitial(from rootViewController: UIViewController? = nil, onDismissed: @escaping () -> Void) {
+        guard RemoteConfigManager.shared.areAdsEnabled,
+              RemoteConfigManager.shared.isInterstitialAdEnabled else {
+            Logger.shared.i("AdMobManager", "Interstitial disabled by remote config. Proceeding instantly.")
+            onDismissed()
+            return
+        }
+
         guard NetworkMonitor.shared.isConnected, let ad = interstitialAd else {
             Logger.shared.i("AdMobManager", "Interstitial ad unavailable or device offline. Proceeding instantly.")
             onDismissed()
@@ -194,6 +278,9 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
             onDismissed()
         }
 
+        // A pending callback from an earlier presentation would be silently dropped
+        // here, leaving its caller waiting forever. Settle it first.
+        onAdDismissed?()
         self.onAdDismissed = completionGate
 
         let vc = rootViewController ?? getTopViewController()
@@ -236,6 +323,13 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
     }
 
     func showRewardedAd(from rootViewController: UIViewController? = nil, onRewardEarned: @escaping (Bool) -> Void) {
+        guard RemoteConfigManager.shared.areAdsEnabled,
+              RemoteConfigManager.shared.isRewardedAdEnabled else {
+            Logger.shared.i("AdMobManager", "Rewarded ad disabled by remote config.")
+            DispatchQueue.main.async { onRewardEarned(false) }
+            return
+        }
+
         guard NetworkMonitor.shared.isConnected, let ad = rewardedAd else {
             Logger.shared.i("AdMobManager", "Rewarded ad unavailable or device offline.")
             DispatchQueue.main.async {
@@ -251,6 +345,8 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
 
         let vc = rootViewController ?? getTopViewController()
         if let topVC = vc {
+            // Settle any pending callback so its caller is never left hanging.
+            onRewardedAdDismissed?()
             self.onRewardedAdDismissed = { [weak self] in
                 DispatchQueue.main.async {
                     onRewardEarned(didEarnReward)
@@ -269,41 +365,12 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
     }
 
     func waitForRewardedAdOrTimeout(maxWaitDuration: TimeInterval = 6.0, completion: @escaping (Bool) -> Void) {
-        guard NetworkMonitor.shared.isConnected else {
-            completion(false)
-            return
-        }
-
-        if isRewardedAdReady {
-            completion(true)
-            return
-        }
-
-        if !isLoadingRewardedAd {
-            loadRewardedAd()
-        }
-
-        var hasTriggered = false
-        let timer = Timer.scheduledTimer(withTimeInterval: maxWaitDuration, repeats: false) { [weak self] _ in
-            guard !hasTriggered else { return }
-            hasTriggered = true
-            Logger.shared.i("AdMobManager", "Rewarded ad wait timed out after \(maxWaitDuration)s.")
-            completion(self?.isRewardedAdReady ?? false)
-        }
-
-        $isRewardedAdReady
-            .dropFirst()
-            .filter { $0 }
-            .first()
-            .receive(on: DispatchQueue.main)
-            .sink { _ in
-                guard !hasTriggered else { return }
-                hasTriggered = true
-                timer.invalidate()
-                Logger.shared.i("AdMobManager", "Rewarded ad loaded dynamically during wait window!")
-                completion(true)
-            }
-            .store(in: &cancellables)
+        awaitReady($isRewardedAdReady,
+                   isAlreadyReady: isRewardedAdReady,
+                   startLoading: { if !isLoadingRewardedAd { loadRewardedAd() } },
+                   timeout: maxWaitDuration,
+                   label: "Rewarded ad",
+                   completion: completion)
     }
 
     // MARK: - App Open Ad
@@ -337,6 +404,13 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
     }
 
     func showAppOpenAd(from rootViewController: UIViewController? = nil, onDismissed: @escaping () -> Void) {
+        guard RemoteConfigManager.shared.areAdsEnabled,
+              RemoteConfigManager.shared.isAppOpenAdEnabled else {
+            Logger.shared.i("AdMobManager", "App open ad disabled by remote config. Proceeding instantly.")
+            onDismissed()
+            return
+        }
+
         guard NetworkMonitor.shared.isConnected, let ad = appOpenAd else {
             Logger.shared.i("AdMobManager", "App open ad unavailable or device offline. Proceeding instantly.")
             onDismissed()
@@ -353,6 +427,7 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
             onDismissed()
         }
 
+        onAppOpenAdDismissed?()
         self.onAppOpenAdDismissed = completionGate
 
         let vc = rootViewController ?? getTopViewController()
@@ -365,81 +440,23 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
     }
 
     func waitForAppOpenAdOrTimeout(maxWaitDuration: TimeInterval = 4.0, completion: @escaping (Bool) -> Void) {
-        guard NetworkMonitor.shared.isConnected else {
-            completion(false)
-            return
-        }
-
-        if isAppOpenAdReady {
-            completion(true)
-            return
-        }
-
-        if !isLoadingAppOpenAd {
-            loadAppOpenAd()
-        }
-
-        var hasTriggered = false
-        let timer = Timer.scheduledTimer(withTimeInterval: maxWaitDuration, repeats: false) { [weak self] _ in
-            guard !hasTriggered else { return }
-            hasTriggered = true
-            Logger.shared.i("AdMobManager", "App open ad wait timed out after \(maxWaitDuration)s.")
-            completion(self?.isAppOpenAdReady ?? false)
-        }
-
-        $isAppOpenAdReady
-            .dropFirst()
-            .filter { $0 }
-            .first()
-            .receive(on: DispatchQueue.main)
-            .sink { _ in
-                guard !hasTriggered else { return }
-                hasTriggered = true
-                timer.invalidate()
-                Logger.shared.i("AdMobManager", "App open ad loaded dynamically during wait window!")
-                completion(true)
-            }
-            .store(in: &cancellables)
+        awaitReady($isAppOpenAdReady,
+                   isAlreadyReady: isAppOpenAdReady,
+                   startLoading: { if !isLoadingAppOpenAd { loadAppOpenAd() } },
+                   timeout: maxWaitDuration,
+                   label: "App open ad",
+                   completion: completion)
     }
 
     // MARK: - Adaptive Waiting (Interstitial)
 
     func waitForAdOrTimeout(maxWaitDuration: TimeInterval = 4.0, completion: @escaping (Bool) -> Void) {
-        guard NetworkMonitor.shared.isConnected else {
-            completion(false)
-            return
-        }
-
-        if isAdReady {
-            completion(true)
-            return
-        }
-
-        if !isLoadingAd {
-            loadInterstitialAd()
-        }
-
-        var hasTriggered = false
-        let timer = Timer.scheduledTimer(withTimeInterval: maxWaitDuration, repeats: false) { [weak self] _ in
-            guard !hasTriggered else { return }
-            hasTriggered = true
-            Logger.shared.i("AdMobManager", "Ad wait timed out after \(maxWaitDuration)s. Continuing startup.")
-            completion(self?.isAdReady ?? false)
-        }
-
-        $isAdReady
-            .dropFirst()
-            .filter { $0 }
-            .first()
-            .receive(on: DispatchQueue.main)
-            .sink { _ in
-                guard !hasTriggered else { return }
-                hasTriggered = true
-                timer.invalidate()
-                Logger.shared.i("AdMobManager", "Ad loaded dynamically during wait window!")
-                completion(true)
-            }
-            .store(in: &cancellables)
+        awaitReady($isAdReady,
+                   isAlreadyReady: isAdReady,
+                   startLoading: { if !isLoadingAd { loadInterstitialAd() } },
+                   timeout: maxWaitDuration,
+                   label: "Interstitial ad",
+                   completion: completion)
     }
 
     // MARK: - FullScreenContentDelegate
@@ -505,13 +522,19 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
     }
 
     private func getTopViewController() -> UIViewController? {
-        guard let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
-              let rootVC = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
-            return UIApplication.shared.windows.first(where: { $0.isKeyWindow })?.rootViewController
+        // `UIApplication.shared.windows` is deprecated and picks arbitrarily across
+        // scenes. Walk the connected scenes instead, preferring the active one.
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+
+        guard let rootVC = scene?.windows.first(where: { $0.isKeyWindow })?.rootViewController
+                ?? scene?.windows.first?.rootViewController else {
+            Logger.shared.e("AdMobManager", "No window scene available to present from")
+            return nil
         }
 
         var topVC = rootVC
-        while let presentedVC = topVC.presentedViewController {
+        while let presentedVC = topVC.presentedViewController, !presentedVC.isBeingDismissed {
             topVC = presentedVC
         }
         return topVC

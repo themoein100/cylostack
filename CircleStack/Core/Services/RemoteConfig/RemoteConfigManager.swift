@@ -15,6 +15,7 @@ class RemoteConfigManager: ObservableObject {
     // Remote Control Keys
     @Published var areAdsEnabled: Bool = true
     @Published var isAppOpenAdEnabled: Bool = true
+    @Published var isInterstitialAdEnabled: Bool = true
     @Published var isRewardedAdEnabled: Bool = true
 
     // Remote Update Keys
@@ -22,11 +23,13 @@ class RemoteConfigManager: ObservableObject {
     @Published var appStoreURL: String = ""
     @Published var privacyURL: String = ""
     @Published var isUpdateRequired: Bool = false
+    /// When true, the update prompt ignores the snooze timer and cannot be dismissed
+    @Published var isForceUpdateEnabled: Bool = false
 
     // Remote Config Endpoint URL (Live Cloudflare Worker)
     var remoteConfigURL: String {
         get {
-            UserDefaults.standard.string(forKey: "remote_config_endpoint_url") ?? "https://patient-tooth-4146.m-sadraei2002.workers.dev"
+            UserDefaults.standard.string(forKey: "remote_config_endpoint_url") ?? "https://patient-tooth-4146.2002-sadraei.workers.dev"
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "remote_config_endpoint_url")
@@ -42,7 +45,15 @@ class RemoteConfigManager: ObservableObject {
         setupAutoRefresh()
     }
 
-    /// Listens for app foreground transitions & polls every 10 seconds for real-time live updates
+    /// How often the config is re-fetched while the app is in the foreground.
+    ///
+    /// This used to be 10 seconds, which cost every player a request every 10s for as
+    /// long as they had the app open — real battery and data for a config that changes
+    /// a few times a month. The foreground refresh below is what actually makes a
+    /// panel change land immediately, so the timer only needs to be a slow backstop.
+    private let pollInterval: TimeInterval = 120.0
+
+    /// Listens for app foreground transitions and polls periodically for live updates
     private func setupAutoRefresh() {
         // Fetch instantly whenever app comes back from background (e.g. after using Telegram)
         NotificationCenter.default.addObserver(
@@ -53,8 +64,31 @@ class RemoteConfigManager: ObservableObject {
             self?.fetchRemoteConfig()
         }
 
-        // Live polling every 10 seconds while app is active
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+        // Stop polling in the background — the timer would otherwise keep firing during
+        // the brief window before suspension and again on every resume.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.pollTimer?.invalidate()
+            self?.pollTimer = nil
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.startPolling()
+        }
+
+        startPolling()
+    }
+
+    private func startPolling() {
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
             self?.fetchRemoteConfig()
         }
     }
@@ -67,8 +101,14 @@ class RemoteConfigManager: ObservableObject {
         if UserDefaults.standard.object(forKey: "remote_app_open_enabled") != nil {
             self.isAppOpenAdEnabled = UserDefaults.standard.bool(forKey: "remote_app_open_enabled")
         }
+        if UserDefaults.standard.object(forKey: "remote_interstitial_enabled") != nil {
+            self.isInterstitialAdEnabled = UserDefaults.standard.bool(forKey: "remote_interstitial_enabled")
+        }
         if UserDefaults.standard.object(forKey: "remote_rewarded_enabled") != nil {
             self.isRewardedAdEnabled = UserDefaults.standard.bool(forKey: "remote_rewarded_enabled")
+        }
+        if UserDefaults.standard.object(forKey: "remote_force_update") != nil {
+            self.isForceUpdateEnabled = UserDefaults.standard.bool(forKey: "remote_force_update")
         }
         if let cachedVersion = UserDefaults.standard.string(forKey: "remote_latest_version") {
             self.latestVersion = cachedVersion
@@ -96,15 +136,24 @@ class RemoteConfigManager: ObservableObject {
         }
 
         let eventType = isFirstInstall ? "install" : "active"
-        let fullURLString = "\(remoteConfigURL)?event=\(eventType)&uuid=\(deviceUUID ?? "")"
 
-        guard let url = URL(string: fullURLString) else {
-            Logger.shared.e("RemoteConfig", "Invalid URL: \(remoteConfigURL)")
+        guard var components = URLComponents(string: remoteConfigURL) else {
+            Logger.shared.e("RemoteConfig", "Invalid endpoint URL")
+            completion?()
+            return
+        }
+        components.queryItems = RemoteConfigCrypto.signedQueryItems(
+            event: eventType,
+            uuid: deviceUUID ?? ""
+        )
+
+        guard let url = components.url else {
+            Logger.shared.e("RemoteConfig", "Could not build signed request URL")
             completion?()
             return
         }
 
-        Logger.shared.i("RemoteConfig", "Fetching remote config (\(eventType)) from: \(fullURLString)...")
+        Logger.shared.i("RemoteConfig", "Fetching remote config (\(eventType))…")
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 4.0
@@ -120,13 +169,26 @@ class RemoteConfigManager: ObservableObject {
                     return
                 }
 
-                guard let data = data, let rawJSONString = String(data: data, encoding: .utf8) else {
-                    Logger.shared.e("RemoteConfig", "No data or empty string received from remote config endpoint")
+                if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                    Logger.shared.e("RemoteConfig", "Endpoint rejected the request (HTTP \(http.statusCode))")
                     completion?()
                     return
                 }
 
-                Logger.shared.i("RemoteConfig", "Raw response from Cloudflare: \(rawJSONString)")
+                guard let body = data, !body.isEmpty else {
+                    Logger.shared.e("RemoteConfig", "Empty response from remote config endpoint")
+                    completion?()
+                    return
+                }
+
+                // The worker replies with an AES-GCM envelope. A body that will not
+                // decrypt is either tampered with or not from our worker, so the
+                // cached config is kept rather than trusting it.
+                guard let data = RemoteConfigCrypto.decrypt(body) else {
+                    Logger.shared.e("RemoteConfig", "Could not decrypt config response — keeping cached values")
+                    completion?()
+                    return
+                }
 
                 do {
                     if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
@@ -148,6 +210,15 @@ class RemoteConfigManager: ObservableObject {
                             appOpenEnabled = adsEnabled
                         }
 
+                        let interstitialEnabled: Bool
+                        if let boolVal = json["interstitial_ads_enabled"] as? Bool {
+                            interstitialEnabled = boolVal
+                        } else if let numVal = json["interstitial_ads_enabled"] as? NSNumber {
+                            interstitialEnabled = numVal.boolValue
+                        } else {
+                            interstitialEnabled = adsEnabled
+                        }
+
                         let rewardedEnabled: Bool
                         if let boolVal = json["rewarded_ads_enabled"] as? Bool {
                             rewardedEnabled = boolVal
@@ -157,13 +228,24 @@ class RemoteConfigManager: ObservableObject {
                             rewardedEnabled = adsEnabled
                         }
 
+                        let forceUpdate: Bool
+                        if let boolVal = json["force_update"] as? Bool {
+                            forceUpdate = boolVal
+                        } else if let numVal = json["force_update"] as? NSNumber {
+                            forceUpdate = numVal.boolValue
+                        } else {
+                            forceUpdate = false
+                        }
+
                         let version = json["latest_version"] as? String ?? self.latestVersion
                         let appstore = json["appstore_url"] as? String ?? self.appStoreURL
                         let privacy = json["privacy_url"] as? String ?? self.privacyURL
 
                         self.areAdsEnabled = adsEnabled
                         self.isAppOpenAdEnabled = appOpenEnabled
+                        self.isInterstitialAdEnabled = interstitialEnabled
                         self.isRewardedAdEnabled = rewardedEnabled
+                        self.isForceUpdateEnabled = forceUpdate
                         self.latestVersion = version
                         self.appStoreURL = appstore
                         self.privacyURL = privacy
@@ -171,7 +253,9 @@ class RemoteConfigManager: ObservableObject {
                         // Cache in UserDefaults for instant offline startup
                         UserDefaults.standard.set(adsEnabled, forKey: "remote_ads_enabled")
                         UserDefaults.standard.set(appOpenEnabled, forKey: "remote_app_open_enabled")
+                        UserDefaults.standard.set(interstitialEnabled, forKey: "remote_interstitial_enabled")
                         UserDefaults.standard.set(rewardedEnabled, forKey: "remote_rewarded_enabled")
+                        UserDefaults.standard.set(forceUpdate, forKey: "remote_force_update")
                         UserDefaults.standard.set(version, forKey: "remote_latest_version")
                         UserDefaults.standard.set(appstore, forKey: "remote_appstore_url")
                         UserDefaults.standard.set(privacy, forKey: "remote_privacy_url")
@@ -181,7 +265,7 @@ class RemoteConfigManager: ObservableObject {
                         Logger.shared.i("RemoteConfig", "Parsed Remote Config SUCCESS -> ads_enabled: \(adsEnabled), version: \(version), appstore: \(appstore)")
                     }
                 } catch {
-                    Logger.shared.e("RemoteConfig", "JSON parsing failed: \(error.localizedDescription). Raw data: \(rawJSONString)")
+                    Logger.shared.e("RemoteConfig", "JSON parsing failed: \(error.localizedDescription)")
                 }
 
                 completion?()
@@ -196,6 +280,12 @@ class RemoteConfigManager: ObservableObject {
 
         if !isVersionNewer {
             self.isUpdateRequired = false
+            return
+        }
+
+        // Force update bypasses the snooze timer entirely
+        if isForceUpdateEnabled {
+            self.isUpdateRequired = true
             return
         }
 
@@ -217,7 +307,21 @@ class RemoteConfigManager: ObservableObject {
         self.isUpdateRequired = false
     }
 
+    /// Compares two dotted version strings component by component.
+    ///
+    /// A plain `.numeric` string compare gets this wrong whenever the two sides have a
+    /// different number of components: it reads "1.0.0" as greater than "1.0" and
+    /// prompts every user of 1.0 to update to the build they are already running.
+    /// Missing trailing components count as zero, so 1.0 == 1.0.0.
     private func isVersion(_ v1: String, greaterThan v2: String) -> Bool {
-        return v1.compare(v2, options: .numeric) == .orderedDescending
+        let lhs = v1.split(separator: ".").map { Int($0) ?? 0 }
+        let rhs = v2.split(separator: ".").map { Int($0) ?? 0 }
+
+        for index in 0..<max(lhs.count, rhs.count) {
+            let left = index < lhs.count ? lhs[index] : 0
+            let right = index < rhs.count ? rhs[index] : 0
+            if left != right { return left > right }
+        }
+        return false
     }
 }

@@ -36,7 +36,7 @@ struct MainContainerView: View {
             }
 
             if showSplash {
-                SplashView(isFinished: $showSplash)
+                SplashView(isPresented: $showSplash)
                     .transition(.opacity)
             }
 
