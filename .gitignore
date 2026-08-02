@@ -1,0 +1,8 @@
+.DS_Store
+build/
+build_sim/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcbkptlist
+*.xcuserdatad
