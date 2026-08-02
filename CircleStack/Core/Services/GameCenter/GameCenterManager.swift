@@ -20,7 +20,7 @@ class GameCenterManager: NSObject, ObservableObject {
     }
 
     /// Authenticates the local player with Apple Game Center.
-    /// If the player is not signed in, it returns a view controller to present.
+    /// If the player is not signed in, it returns a view controller to present
     func authenticateLocalPlayer() {
         let localPlayer = GKLocalPlayer.local
         
