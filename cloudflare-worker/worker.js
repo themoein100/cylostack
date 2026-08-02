@@ -2,6 +2,10 @@
 //  CircleStack — Cloudflare Worker  (Remote Config + Telegram Bot)
 //  KV Binding: CONFIG_KV / CIRCLESTACK_KV
 // ════════════════════════════════════════════════════════════════════
+import { verifyAttestation, verifyAssertion, bytesToB64, b64ToBytes } from "./appattest.js";
+
+/// Team ID + bundle identifier, the "app id" App Attest binds keys to.
+const APP_ATTEST_APP_ID = "HR6SBNSUB5.com.CyloStack.app";
 
 // Telegram Bot API Helper
 function getTelegramApi(env) {
@@ -93,6 +97,10 @@ async function isAdmin(env, userId, username) {
 export default {
   async fetch(request, env) {
     try {
+      const action = new URL(request.url).searchParams.get("action");
+      if (action === "challenge") return await handleChallenge(env);
+      if (action === "attest")    return await handleAttest(request, env);
+
       if (request.method === "GET")  return await handleGet(request, env);
       if (request.method === "POST") return await handlePost(request, env);
     } catch (e) {
@@ -101,6 +109,109 @@ export default {
     return new Response("CircleStack API Active", { status: 200 });
   },
 };
+
+// ════════════════════════════════════════════════════════════════════
+//  App Attest endpoints
+// ════════════════════════════════════════════════════════════════════
+const jsonResponse = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+
+/// A one-time nonce. Attestations and assertions are both bound to one of these,
+/// so a captured request cannot be replayed.
+/// base64url, because these values travel in a query string: standard base64's
+/// "+" arrives as a space and the value no longer matches what was signed.
+function toBase64Url(bytes) {
+  return bytesToB64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/// Accepts either alphabet and returns one canonical form, so a key registered as
+/// base64 and later presented as base64url still resolves to the same record.
+function canonicalKeyId(value) {
+  try {
+    return toBase64Url(b64ToBytes(value));
+  } catch (_) {
+    return "";
+  }
+}
+
+async function handleChallenge(env) {
+  const challenge = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+  await kv.put(env, `challenge_${challenge}`, "1", { expirationTtl: 300 });
+  return jsonResponse({ challenge });
+}
+
+async function consumeChallenge(env, challenge) {
+  if (!challenge) return false;
+  const key = `challenge_${challenge}`;
+  if (!await kv.get(env, key)) return false;
+  // Burn it so the same nonce cannot be used twice.
+  await kv.put(env, key, "", { expirationTtl: 60 });
+  return true;
+}
+
+/// Registers a device key after Apple has vouched for it.
+async function handleAttest(request, env) {
+  if (request.method !== "PUT") return jsonResponse({ error: "method_not_allowed" }, 405);
+
+  const body = await request.json().catch(() => null);
+  if (!body?.keyId || !body?.challenge || !body?.attestation) {
+    return jsonResponse({ error: "missing_fields" }, 400);
+  }
+
+  if (!await consumeChallenge(env, body.challenge)) {
+    return jsonResponse({ error: "unknown_challenge" }, 401);
+  }
+
+  try {
+    const { publicKey, signCount } = await verifyAttestation({
+      attestation: body.attestation,
+      keyId: body.keyId,
+      challenge: body.challenge,
+      appId: APP_ATTEST_APP_ID,
+    });
+
+    await kv.put(env, `attest_${canonicalKeyId(body.keyId)}`, JSON.stringify({ publicKey, signCount }));
+    console.log("App Attest: registered key", body.keyId);
+    return jsonResponse({ ok: true });
+  } catch (e) {
+    console.log("App Attest: rejected attestation —", e.message);
+    return jsonResponse({ error: e.message }, 401);
+  }
+}
+
+/// Checks a per-request assertion. Returns true only when the request provably
+/// came from a device key Apple already vouched for.
+async function verifyAttestedRequest(env, { keyId, assertion, challenge, event, uuid }) {
+  if (!keyId || !assertion || !challenge) return false;
+
+  const canonical = canonicalKeyId(keyId);
+  const raw = await kv.get(env, `attest_${canonical}`);
+  if (!raw) return false;
+
+  let record;
+  try { record = JSON.parse(raw); } catch (_) { return false; }
+
+  if (!await consumeChallenge(env, challenge)) return false;
+
+  try {
+    const { signCount } = await verifyAssertion({
+      assertion,
+      publicKey: record.publicKey,
+      clientData: `${challenge}|${event}|${uuid}`,
+      appId: APP_ATTEST_APP_ID,
+      lastCount: record.signCount,
+    });
+
+    await kv.put(env, `attest_${canonical}`, JSON.stringify({ ...record, signCount }));
+    return true;
+  } catch (e) {
+    console.log("App Attest: rejected assertion —", e.message);
+    return false;
+  }
+}
 
 // ════════════════════════════════════════════════════════════════════
 //  Transport security
@@ -190,18 +301,34 @@ async function handleGet(request, env) {
   const event = url.searchParams.get("event") || "";
   const uuid  = url.searchParams.get("uuid")  || "anon";
 
-  const auth = await verifyRequest(env, {
+  // Two ways in, strongest first.
+  //
+  // App Attest is the real guarantee: the signing key lives in the Secure Enclave,
+  // so there is nothing extractable from the binary. Devices that cannot do it —
+  // the Simulator, older hardware — fall back to the shared-key signature, which
+  // is weaker but keeps the app working rather than locking anyone out.
+  const attested = await verifyAttestedRequest(env, {
+    keyId:     url.searchParams.get("keyId"),
+    assertion: url.searchParams.get("assertion"),
+    challenge: url.searchParams.get("challenge"),
     event,
     uuid,
-    ts:  url.searchParams.get("ts"),
-    sig: url.searchParams.get("sig"),
   });
 
-  if (!auth.ok) {
-    return new Response(JSON.stringify({ error: auth.reason }), {
-      status: auth.reason === "server_not_configured" ? 500 : 401,
-      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  if (!attested) {
+    const auth = await verifyRequest(env, {
+      event,
+      uuid,
+      ts:  url.searchParams.get("ts"),
+      sig: url.searchParams.get("sig"),
     });
+
+    if (!auth.ok) {
+      return new Response(JSON.stringify({ error: auth.reason }), {
+        status: auth.reason === "server_not_configured" ? 500 : 401,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
   }
 
   // Only count events from a request that proved it came from the app.
@@ -242,6 +369,10 @@ async function handleGet(request, env) {
     headers: {
       "Content-Type":  "application/json",
       "Cache-Control": "no-store",
+      // Tells the app which path actually authenticated it. Without this an app
+      // whose key the server has forgotten would fall back to the shared key
+      // forever and never notice it should attest again.
+      "X-Attested":    attested ? "1" : "0",
     },
   });
 }

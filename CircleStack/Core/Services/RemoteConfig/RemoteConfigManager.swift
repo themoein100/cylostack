@@ -137,26 +137,56 @@ class RemoteConfigManager: ObservableObject {
 
         let eventType = isFirstInstall ? "install" : "active"
 
-        guard var components = URLComponents(string: remoteConfigURL) else {
+        let endpoint = remoteConfigURL
+        let uuid = deviceUUID ?? ""
+
+        // App Attest proves the request came from a real, unmodified install; the
+        // shared-key signature is the fallback for the Simulator and older devices.
+        Task {
+            let attested = await AppAttestService.shared.assertion(
+                endpoint: endpoint, event: eventType, uuid: uuid
+            )
+
+            // The shared-key signature always rides along, even when an assertion is
+            // attached. If the server cannot verify the attestation — a key it has
+            // forgotten, a format change — the request still authenticates instead
+            // of failing outright and leaving the app with no config at all.
+            var items = RemoteConfigCrypto.signedQueryItems(event: eventType, uuid: uuid)
+
+            if let attested = attested {
+                items += [
+                    URLQueryItem(name: "keyId", value: attested.keyID),
+                    URLQueryItem(name: "assertion", value: attested.assertion),
+                    URLQueryItem(name: "challenge", value: attested.challenge),
+                ]
+            }
+
+            await MainActor.run {
+                self.send(endpoint: endpoint, items: items, attested: attested != nil,
+                          eventType: eventType, completion: completion)
+            }
+        }
+    }
+
+    private func send(endpoint: String, items: [URLQueryItem], attested: Bool,
+                      eventType: String, completion: (() -> Void)?) {
+        guard var components = URLComponents(string: endpoint) else {
             Logger.shared.e("RemoteConfig", "Invalid endpoint URL")
             completion?()
             return
         }
-        components.queryItems = RemoteConfigCrypto.signedQueryItems(
-            event: eventType,
-            uuid: deviceUUID ?? ""
-        )
+        components.queryItems = items
 
         guard let url = components.url else {
-            Logger.shared.e("RemoteConfig", "Could not build signed request URL")
+            Logger.shared.e("RemoteConfig", "Could not build request URL")
             completion?()
             return
         }
 
-        Logger.shared.i("RemoteConfig", "Fetching remote config (\(eventType))…")
+        Logger.shared.i("RemoteConfig", "Fetching remote config (\(eventType)) — \(attested ? "App Attest" : "shared key")")
 
         var request = URLRequest(url: url)
-        request.timeoutInterval = 4.0
+        request.timeoutInterval = 8.0
         request.cachePolicy = .reloadIgnoringLocalCacheData
 
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
@@ -169,10 +199,23 @@ class RemoteConfigManager: ObservableObject {
                     return
                 }
 
-                if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                let http = response as? HTTPURLResponse
+
+                if let http = http, http.statusCode != 200 {
                     Logger.shared.e("RemoteConfig", "Endpoint rejected the request (HTTP \(http.statusCode))")
+                    if attested, http.statusCode == 401 {
+                        Task { await AppAttestService.shared.invalidateRegistration() }
+                    }
                     completion?()
                     return
+                }
+
+                // Sent an assertion but the server did not honour it — its record of
+                // this key is gone, so register again instead of quietly relying on
+                // the weaker shared key from here on.
+                if attested, http?.value(forHTTPHeaderField: "X-Attested") != "1" {
+                    Logger.shared.w("RemoteConfig", "Server did not accept the assertion — re-attesting")
+                    Task { await AppAttestService.shared.invalidateRegistration() }
                 }
 
                 guard let body = data, !body.isEmpty else {
