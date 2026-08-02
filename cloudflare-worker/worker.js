@@ -3,8 +3,11 @@
 //  KV Binding: CONFIG_KV / CIRCLESTACK_KV
 // ════════════════════════════════════════════════════════════════════
 
-const BOT_TOKEN = "REDACTED_REVOKED_TOKEN";
-const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
+// Telegram Bot API Helper
+function getTelegramApi(env) {
+  const token = env?.BOT_TOKEN || "";
+  return `https://api.telegram.org/bot${token}`;
+}
 
 // 👑 Master Admin User ID (Moein)
 const MASTER_ADMIN_ID = 1067160779;
@@ -148,7 +151,7 @@ async function handlePost(request, env) {
   // 🔒 Security Barrier: Block non-admin users
   const authorized = await isAdmin(env, userId);
   if (!authorized) {
-    await sendMsg(chatId, `⛔️ *دسترسی غیرمجاز!*\n\nآیدی تلگرام شما (\`${userId}\`) در لیست مدیران تاییدشده ثبت نشده است.`);
+    await sendMsg(env, chatId, `⛔️ *دسترسی غیرمجاز!*\n\nآیدی تلگرام شما (\`${userId}\`) در لیست مدیران تاییدشده ثبت نشده است.`);
     return new Response("OK");
   }
 
@@ -159,7 +162,7 @@ async function handlePost(request, env) {
   if (text.startsWith("/addadmin ")) {
     const newAdminId = Number(text.slice(10).trim());
     if (isNaN(newAdminId) || newAdminId <= 0) {
-      await sendMsg(chatId, "❌ آیدی عددی غیرمجاز است.\nمثال: `/addadmin 123456789`");
+      await sendMsg(env, chatId, "❌ آیدی عددی غیرمجاز است.\nمثال: `/addadmin 123456789`");
       return new Response("OK");
     }
     let currentAdmins = [];
@@ -168,7 +171,7 @@ async function handlePost(request, env) {
       currentAdmins.push(newAdminId);
       await kv.put(env, "admin_user_ids", JSON.stringify(currentAdmins));
     }
-    await sendMsg(chatId, `✅ آیدی عددی \`${newAdminId}\` با موفقیت به ادمین‌های ربات اضافه شد.`);
+    await sendMsg(env, chatId, `✅ آیدی عددی \`${newAdminId}\` با موفقیت به ادمین‌های ربات اضافه شد.`);
     return new Response("OK");
   }
 
@@ -178,7 +181,7 @@ async function handlePost(request, env) {
     try { currentAdmins = JSON.parse(await kv.get(env, "admin_user_ids") || "[]"); } catch (_) {}
     currentAdmins = currentAdmins.filter(id => id !== remAdminId);
     await kv.put(env, "admin_user_ids", JSON.stringify(currentAdmins));
-    await sendMsg(chatId, `🗑 آیدی عددی \`${remAdminId}\` از ادمین‌ها حذف شد.`);
+    await sendMsg(env, chatId, `🗑 آیدی عددی \`${remAdminId}\` از ادمین‌ها حذف شد.`);
     return new Response("OK");
   }
 
@@ -236,15 +239,15 @@ async function handlePost(request, env) {
     return await sendMenu(env, chatId, "✅ تبلیغ Rewarded روشن شد.");
   }
   if (text.includes("نسخه جدید") || text === "/version") {
-    await sendForceReply(chatId, "📝 شماره نسخه جدید را وارد کنید (مثال: 2.0.0):\n\n💡 یا از دستور مستقیم استفاده کن:\n/setversion 2.0.0");
+    await sendForceReply(env, chatId, "📝 شماره نسخه جدید را وارد کنید (مثال: 2.0.0):\n\n💡 یا از دستور مستقیم استفاده کن:\n/setversion 2.0.0");
     return new Response("OK");
   }
   if (text.includes("لینک اپ استور") || text === "/appstore") {
-    await sendForceReply(chatId, "📝 لینک اپ استور را وارد کنید:\n\n💡 یا از دستور مستقیم:\n/setappstore https://apps.apple.com/app/id...");
+    await sendForceReply(env, chatId, "📝 لینک اپ استور را وارد کنید:\n\n💡 یا از دستور مستقیم:\n/setappstore https://apps.apple.com/app/id...");
     return new Response("OK");
   }
   if (text.includes("حریم خصوصی") || text === "/privacy") {
-    await sendForceReply(chatId, "📝 لینک حریم خصوصی privacy را وارد کنید:\n\n💡 یا از دستور مستقیم:\n/setprivacy https://...");
+    await sendForceReply(env, chatId, "📝 لینک حریم خصوصی privacy را وارد کنید:\n\n💡 یا از دستور مستقیم:\n/setprivacy https://...");
     return new Response("OK");
   }
 
@@ -257,7 +260,7 @@ async function handlePost(request, env) {
 // ════════════════════════════════════════════════════════════════════
 async function handleSetVersion(env, chatId, value) {
   if (!/^\d+(\.\d+)+$/.test(value)) {
-    await sendMsg(chatId, "❌ فرمت نسخه اشتباه است.\nمثال صحیح: 2.0.0 یا 1.2.3");
+    await sendMsg(env, chatId, "❌ فرمت نسخه اشتباه است.\nمثال صحیح: 2.0.0 یا 1.2.3");
     return new Response("OK");
   }
   await kv.put(env, "latest_version", value);
@@ -266,7 +269,7 @@ async function handleSetVersion(env, chatId, value) {
 
 async function handleSetAppstore(env, chatId, value) {
   if (!value.startsWith("http")) {
-    await sendMsg(chatId, "❌ لینک باید با https:// شروع شود.");
+    await sendMsg(env, chatId, "❌ لینک باید با https:// شروع شود.");
     return new Response("OK");
   }
   await kv.put(env, "appstore_url", value);
@@ -275,7 +278,7 @@ async function handleSetAppstore(env, chatId, value) {
 
 async function handleSetPrivacy(env, chatId, value) {
   if (!value.startsWith("http")) {
-    await sendMsg(chatId, "❌ لینک باید با https:// شروع شود.");
+    await sendMsg(env, chatId, "❌ لینک باید با https:// شروع شود.");
     return new Response("OK");
   }
   await kv.put(env, "privacy_url", value);
@@ -317,7 +320,7 @@ async function sendMenu(env, chatId, headerMsg) {
 
   const fullMsg = headerMsg ? `${headerMsg}\n\n${statsMsg}` : statsMsg;
 
-  await sendMsg(chatId, fullMsg, {
+  await sendMsg(env, chatId, fullMsg, {
     keyboard: [
       [
         { text: adsOn ? "⛔️ خاموش کردن تبلیغات" : "✅ روشن کردن تبلیغات" },
@@ -348,7 +351,7 @@ async function sendMenu(env, chatId, headerMsg) {
 // ════════════════════════════════════════════════════════════════════
 //  Telegram API Helpers
 // ════════════════════════════════════════════════════════════════════
-async function sendMsg(chatId, text, keyboard) {
+async function sendMsg(env, chatId, text, keyboard) {
   const body = {
     chat_id:    chatId,
     text:       text,
@@ -356,15 +359,15 @@ async function sendMsg(chatId, text, keyboard) {
   };
   if (keyboard) body.reply_markup = { keyboard, resize_keyboard: true };
 
-  await fetch(`${API}/sendMessage`, {
+  await fetch(`${getTelegramApi(env)}/sendMessage`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify(body),
   });
 }
 
-async function sendForceReply(chatId, text) {
-  await fetch(`${API}/sendMessage`, {
+async function sendForceReply(env, chatId, text) {
+  await fetch(`${getTelegramApi(env)}/sendMessage`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({
