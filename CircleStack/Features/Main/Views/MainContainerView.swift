@@ -194,7 +194,6 @@ struct MainContainerView: View {
             selectedTab = tab
             tabResetID = UUID()
         }
-        SoundManager.shared.playGood()
     }
 }
 

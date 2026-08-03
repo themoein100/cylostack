@@ -238,7 +238,14 @@ class SoundManager {
         playerNode.play()
     }
     
-    // Public Trigger Interfaces
+    // MARK: - Public triggers
+    //
+    // These belong to gameplay and nothing else. Sound and vibration used to fire
+    // on menu taps, settings toggles, tab switches and profile edits too, which
+    // made the whole app buzz and chirp at every touch. Only GameScene calls into
+    // here now — placing a disc, a perfect hit, a miss, a fall. Everywhere else in
+    // the app is silent, so the feedback means something when it does happen.
+
     func playPerfect() {
         Logger.shared.d("SoundManager", "Trigger perfect arpeggio chime")
         play(perfectBuffer)

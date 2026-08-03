@@ -29,7 +29,6 @@ struct LeaderboardCardView: View {
                 
                 if gcManager.isAuthenticated {
                     Button(action: {
-                        SoundManager.shared.playGood()
                         gcManager.fetchTopScores()
                     }) {
                         Image(systemName: "arrow.clockwise")
@@ -41,7 +40,6 @@ struct LeaderboardCardView: View {
                 }
                 
                 Button(action: {
-                    SoundManager.shared.playGood()
                     showFullLeaderboard = true
                 }) {
                     Text("Full List")
@@ -71,7 +69,6 @@ struct LeaderboardCardView: View {
                             .padding(.horizontal, 24)
                         
                         Button(action: {
-                            SoundManager.shared.playGood()
                             gcManager.authenticateLocalPlayer()
                         }) {
                             Text("Connect Game Center")

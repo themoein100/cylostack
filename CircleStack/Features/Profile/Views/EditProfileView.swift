@@ -84,7 +84,6 @@ struct EditProfileView: View {
                         VStack(spacing: 16) {
                             if GameCenterManager.shared.isAuthenticated {
                                 Button(action: {
-                                    SoundManager.shared.playGood()
                                     GameCenterManager.shared.syncProfileFromGameCenter()
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                                         firstName = store.firstName
