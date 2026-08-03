@@ -18,6 +18,9 @@ struct GameOverModal: View {
     var requiredAds: Int = 1
     var adsWatched: Int = 0
     var userCoins: Int = 0
+    /// Rises with each coin revive taken this run, so the label has to follow it
+    /// rather than hard-coding the opening price.
+    var coinReviveCost: Int = 2
 
     @ObservedObject private var adManager = AdMobManager.shared
 
@@ -166,13 +169,14 @@ struct GameOverModal: View {
                 }
             }
 
-            // Coin Revive Option (Always available if player has >= 2 coins)
-            if let onContinueWithCoins = onContinueWithCoins, userCoins >= 2 {
+            // Coin revive, offered only when the player can actually afford
+            // this run's escalating price.
+            if let onContinueWithCoins = onContinueWithCoins, userCoins >= coinReviveCost {
                 Button(action: onContinueWithCoins) {
                     HStack(spacing: 8) {
                         Image(systemName: "circle.hexagongrid.fill")
                             .foregroundColor(.yellow)
-                        Text("CONTINUE (2 COINS)")
+                        Text("CONTINUE (\(coinReviveCost) COINS)")
                             .font(.system(.subheadline, design: .rounded).weight(.black))
                     }
                     .foregroundColor(.white)

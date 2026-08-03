@@ -122,8 +122,18 @@ class GameViewModel: ObservableObject {
         canShowAdReviveButton && AdMobManager.shared.isRewardedAdReady
     }
 
+    /// Coin revives taken in the current run. Resets with every new run.
+    @Published private(set) var coinRevivesUsed: Int = 0
+
+    /// What the next coin revive costs: two for the first, one more each time
+    /// after. Carrying a run further and further has to get harder to justify,
+    /// otherwise a large balance turns any run into an unbounded one.
+    var coinReviveCost: Int {
+        2 + coinRevivesUsed
+    }
+
     var canReviveWithCoins: Bool {
-        store.coins >= 2
+        store.coins >= coinReviveCost
     }
 
     func watchAdForFreeCoin() {
@@ -190,6 +200,7 @@ class GameViewModel: ObservableObject {
         currentScore = 0
         currentCombo = 0
         adRevivesUsed = 0
+        coinRevivesUsed = 0
         adsWatchedForRevive = 0
         showGameOver = false
         withAnimation(.easeInOut(duration: 0.25)) {
@@ -215,6 +226,7 @@ class GameViewModel: ObservableObject {
             currentScore = 0
             currentCombo = 0
             adRevivesUsed = 0
+            coinRevivesUsed = 0
             adsWatchedForRevive = 0
         }
         gameScene?.startGame()
@@ -263,8 +275,10 @@ class GameViewModel: ObservableObject {
     }
 
     func reviveWithCoins() {
-        guard store.spendCoins(2) else { return }
-        Logger.shared.i("GameVM", "Player spent 2 coins to revive")
+        let cost = coinReviveCost
+        guard store.spendCoins(cost) else { return }
+        coinRevivesUsed += 1
+        Logger.shared.i("GameVM", "Player spent \(cost) coins to revive (next costs \(coinReviveCost))")
         adsWatchedForRevive = 0
         reviveGame(type: .coins)
     }
