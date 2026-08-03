@@ -95,13 +95,13 @@ async function isAdmin(env, userId, username) {
 //  MAIN HANDLER
 // ════════════════════════════════════════════════════════════════════
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
       const action = new URL(request.url).searchParams.get("action");
       if (action === "challenge") return await handleChallenge(env);
       if (action === "attest")    return await handleAttest(request, env);
 
-      if (request.method === "GET")  return await handleGet(request, env);
+      if (request.method === "GET")  return await handleGet(request, env, ctx);
       if (request.method === "POST") return await handlePost(request, env);
     } catch (e) {
       console.error("Worker error:", e);
@@ -166,15 +166,19 @@ async function handleAttest(request, env) {
   }
 
   try {
-    const { publicKey, signCount } = await verifyAttestation({
+    const { publicKey, signCount, environment } = await verifyAttestation({
       attestation: body.attestation,
       keyId: body.keyId,
       challenge: body.challenge,
       appId: APP_ATTEST_APP_ID,
+      // Defaults to allowing development keys so testing from Xcode works. Flip
+      // APP_ATTEST_ALLOW_DEV to "false" in wrangler.toml once the app has shipped.
+      allowDevelopment: env.APP_ATTEST_ALLOW_DEV !== "false",
     });
 
-    await kv.put(env, `attest_${canonicalKeyId(body.keyId)}`, JSON.stringify({ publicKey, signCount }));
-    console.log("App Attest: registered key", body.keyId);
+    await kv.put(env, `attest_${canonicalKeyId(body.keyId)}`,
+      JSON.stringify({ publicKey, signCount, environment }));
+    console.log(`App Attest: registered ${environment} key`, body.keyId);
     return jsonResponse({ ok: true });
   } catch (e) {
     console.log("App Attest: rejected attestation —", e.message);
@@ -296,7 +300,7 @@ async function encryptPayload(env, payload) {
 // ════════════════════════════════════════════════════════════════════
 //  GET — iOS App fetches remote config
 // ════════════════════════════════════════════════════════════════════
-async function handleGet(request, env) {
+async function handleGet(request, env, ctx) {
   const url   = new URL(request.url);
   const event = url.searchParams.get("event") || "";
   const uuid  = url.searchParams.get("uuid")  || "anon";
@@ -331,8 +335,12 @@ async function handleGet(request, env) {
     }
   }
 
-  // Only count events from a request that proved it came from the app.
-  trackEvent(env, event, uuid).catch(() => {});
+  // Must be handed to waitUntil: a Worker kills any pending async work the moment
+  // the response is returned, which was cutting trackEvent off part-way. The
+  // per-device marker got written and the counter never did, so the panel showed
+  // zero installs and zero daily actives no matter how much the game was played.
+  const tracking = trackEvent(env, event, uuid).catch(() => {});
+  if (ctx?.waitUntil) ctx.waitUntil(tracking);
 
   // Read config values
   const [adsRaw, appOpenRaw, interstitialRaw, rewardedRaw, version, appstoreURL, privacyURL, forceUpdateRaw] = await Promise.all([
