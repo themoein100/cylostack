@@ -242,7 +242,7 @@ async function verifySignedBy(child, parentSpkiBytes) {
 /// Verifies a fresh attestation and returns the device public key to store.
 /// Throws with a specific reason on any failure — the caller turns that into
 /// a 401 rather than trusting a partially-checked attestation.
-export async function verifyAttestation({ attestation, keyId, challenge, appId }) {
+export async function verifyAttestation({ attestation, keyId, challenge, appId, allowDevelopment = true }) {
   const decoded = decodeCBOR(b64ToBytes(attestation));
 
   if (decoded.fmt !== "apple-appattest") throw new Error("bad_format");
@@ -283,15 +283,26 @@ export async function verifyAttestation({ attestation, keyId, challenge, appId }
   const counter = new DataView(authData.buffer, authData.byteOffset + 33, 4).getUint32(0);
   if (counter !== 0) throw new Error("counter_not_zero");
 
+  // The aaguid records which of Apple's two App Attest services issued this:
+  // "appattestdevelop" for builds run from Xcode, "appattest" for App Store and
+  // TestFlight. Once the app has shipped, set APP_ATTEST_ALLOW_DEV="false" so a
+  // development-signed build can no longer register against the live worker.
   const aaguid = new TextDecoder().decode(authData.subarray(37, 53)).replace(/\0+$/, "");
-  if (aaguid !== "appattest" && aaguid !== "appattestdevelop") throw new Error("bad_aaguid");
+  const isDevelopment = aaguid === "appattestdevelop";
+
+  if (aaguid !== "appattest" && !isDevelopment) throw new Error("bad_aaguid");
+  if (isDevelopment && !allowDevelopment) throw new Error("development_key_rejected");
 
   const credIdLength = new DataView(authData.buffer, authData.byteOffset + 53, 2).getUint16(0);
   const credId = authData.subarray(55, 55 + credIdLength);
   if (!bytesEqual(credId, b64ToBytes(keyId))) throw new Error("key_id_mismatch");
 
   // 4. The leaf's public key is what future assertions are checked against.
-  return { publicKey: bytesToB64(leaf.spkiBytes), signCount: counter };
+  return {
+    publicKey: bytesToB64(leaf.spkiBytes),
+    signCount: counter,
+    environment: isDevelopment ? "development" : "production",
+  };
 }
 
 // ─── Assertion ──────────────────────────────────────────────────────

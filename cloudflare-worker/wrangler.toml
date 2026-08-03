@@ -5,3 +5,12 @@ compatibility_date = "2024-01-01"
 [[kv_namespaces]]
 binding = "CIRCLESTACK_KV"
 id = "1663757a84224e32951815b783181fec"
+
+[vars]
+# App Attest keys minted by a build running from Xcode are stamped
+# "development"; App Store and TestFlight builds are stamped "production".
+#
+# Keep this "true" while developing, or testing on your own device stops working.
+# Set it to "false" once the app is live so only real App Store installs can
+# register — then redeploy.
+APP_ATTEST_ALLOW_DEV = "true"
