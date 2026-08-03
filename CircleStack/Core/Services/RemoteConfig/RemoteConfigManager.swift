@@ -122,12 +122,28 @@ class RemoteConfigManager: ObservableObject {
         evaluateUpdateRequirement()
     }
 
+    /// True while a fetch is in flight, so overlapping triggers collapse into one.
+    ///
+    /// At launch the splash screen asks for the config at the same moment
+    /// `willEnterForeground` fires, and both were going out — two signed requests,
+    /// two analytics events, two races on the same counter, for one app open.
+    private var isFetching = false
+
     /// Asynchronously fetches remote settings & registers install / daily active user metrics
     func fetchRemoteConfig(completion: (() -> Void)? = nil) {
-        let isFirstInstall = !UserDefaults.standard.bool(forKey: "has_registered_install")
-        if isFirstInstall {
-            UserDefaults.standard.set(true, forKey: "has_registered_install")
+        guard !isFetching else {
+            Logger.shared.d("RemoteConfig", "Fetch already in flight — skipping duplicate")
+            completion?()
+            return
         }
+        isFetching = true
+
+        // The flag is only set once the server has actually answered — see `send`.
+        // It used to be written here, before the request went out, so a first launch
+        // that happened to be offline burned the one and only install event: the
+        // device then reported "active" forever and never appeared in the install
+        // count at all.
+        let isFirstInstall = !UserDefaults.standard.bool(forKey: "has_registered_install")
 
         var deviceUUID = UserDefaults.standard.string(forKey: "device_analytics_uuid")
         if deviceUUID == nil {
@@ -170,16 +186,24 @@ class RemoteConfigManager: ObservableObject {
 
     private func send(endpoint: String, items: [URLQueryItem], attested: Bool,
                       eventType: String, completion: (() -> Void)?) {
+        // Every exit below has to run this. A path that returns without clearing
+        // isFetching would wedge the app out of remote config for the rest of the
+        // session — one dropped request and it never asks again.
+        let finish: () -> Void = { [weak self] in
+            self?.isFetching = false
+            completion?()
+        }
+
         guard var components = URLComponents(string: endpoint) else {
             Logger.shared.e("RemoteConfig", "Invalid endpoint URL")
-            completion?()
+            finish()
             return
         }
         components.queryItems = items
 
         guard let url = components.url else {
             Logger.shared.e("RemoteConfig", "Could not build request URL")
-            completion?()
+            finish()
             return
         }
 
@@ -195,7 +219,7 @@ class RemoteConfigManager: ObservableObject {
 
                 if let error = error {
                     Logger.shared.e("RemoteConfig", "Network error fetching remote config: \(error.localizedDescription)")
-                    completion?()
+                    finish()
                     return
                 }
 
@@ -206,7 +230,7 @@ class RemoteConfigManager: ObservableObject {
                     if attested, http.statusCode == 401 {
                         Task { await AppAttestService.shared.invalidateRegistration() }
                     }
-                    completion?()
+                    finish()
                     return
                 }
 
@@ -220,7 +244,7 @@ class RemoteConfigManager: ObservableObject {
 
                 guard let body = data, !body.isEmpty else {
                     Logger.shared.e("RemoteConfig", "Empty response from remote config endpoint")
-                    completion?()
+                    finish()
                     return
                 }
 
@@ -229,7 +253,7 @@ class RemoteConfigManager: ObservableObject {
                 // cached config is kept rather than trusting it.
                 guard let data = RemoteConfigCrypto.decrypt(body) else {
                     Logger.shared.e("RemoteConfig", "Could not decrypt config response — keeping cached values")
-                    completion?()
+                    finish()
                     return
                 }
 
@@ -305,13 +329,20 @@ class RemoteConfigManager: ObservableObject {
 
                         self.evaluateUpdateRequirement()
 
+                        // Only now is the install genuinely recorded. Until the server
+                        // answers, the next launch should try again.
+                        if eventType == "install" {
+                            UserDefaults.standard.set(true, forKey: "has_registered_install")
+                            Logger.shared.i("RemoteConfig", "Install registered")
+                        }
+
                         Logger.shared.i("RemoteConfig", "Parsed Remote Config SUCCESS -> ads_enabled: \(adsEnabled), version: \(version), appstore: \(appstore)")
                     }
                 } catch {
                     Logger.shared.e("RemoteConfig", "JSON parsing failed: \(error.localizedDescription)")
                 }
 
-                completion?()
+                finish()
             }
         }.resume()
     }

@@ -100,7 +100,6 @@ struct GameSettingsSheet: View {
                             set: { on in
                                 isMuted = !on
                                 SoundManager.shared.isMuted = isMuted
-                                if !isMuted { SoundManager.shared.playGood() }
                             }
                         ))
                         .tint(Color.green)
@@ -181,7 +180,6 @@ struct GameSettingsSheet: View {
 
                         if gcManager.isAuthenticated {
                             Button(action: {
-                                SoundManager.shared.playGood()
                                 showLeaderboard = true
                             }) {
                                 Text("View")
@@ -194,7 +192,6 @@ struct GameSettingsSheet: View {
                             }
                         } else {
                             Button(action: {
-                                SoundManager.shared.playGood()
                                 gcManager.authenticateLocalPlayer()
                             }) {
                                 Text("Connect")
@@ -224,7 +221,6 @@ struct GameSettingsSheet: View {
 
             settingsCard {
                 Button(action: {
-                    SoundManager.shared.playGood()
                     if let url = URL(string: remoteConfig.privacyURL),
                        UIApplication.shared.canOpenURL(url) {
                         UIApplication.shared.open(url)
@@ -329,7 +325,6 @@ struct GameSettingsSheet: View {
                 VStack(spacing: 0) {
                     // Rate App
                     Button(action: {
-                        SoundManager.shared.playGood()
                         rateOnAppStore()
                     }) {
                         HStack(spacing: 14) {
@@ -366,7 +361,6 @@ struct GameSettingsSheet: View {
 
                     // Share App
                     Button(action: {
-                        SoundManager.shared.playGood()
                         shareApp()
                     }) {
                         HStack(spacing: 14) {

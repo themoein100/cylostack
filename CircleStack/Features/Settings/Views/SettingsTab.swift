@@ -153,11 +153,8 @@ struct SettingsTab: View {
     private func tap(_ material: DiscMaterial) {
         if store.isUnlocked(material) {
             store.selectedMaterialID = material.id
-            SoundManager.shared.playGood()
-        } else if store.purchase(material) {
-            SoundManager.shared.playPerfect()
         } else {
-            SoundManager.shared.playBad()
+            store.purchase(material)
         }
     }
 }
@@ -222,7 +219,6 @@ private struct DifficultyDial: View {
                         withAnimation(.spring(response: 0.28, dampingFraction: 0.75)) {
                             level = step
                         }
-                        SoundManager.shared.playGood()
                     } label: {
                         ZStack {
                             Capsule()

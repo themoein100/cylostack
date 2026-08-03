@@ -388,28 +388,45 @@ async function handleGet(request, env, ctx) {
 // ════════════════════════════════════════════════════════════════════
 //  Analytics — Unique User Tracking
 // ════════════════════════════════════════════════════════════════════
+/// Records one marker key per device, per event. No counters.
+///
+/// The counters this replaces were read-modify-write: two devices opening the app
+/// at the same moment both read the same number and both wrote the same number
+/// plus one, so one of them was lost. Undetectable at one user and steadily
+/// wrong at a thousand. The markers are the truth; they get counted on demand.
 async function trackEvent(env, event, uuid) {
   if (!getKV(env) || !event || !uuid) return;
-  const today = iranToday();
+  if (event !== "install" && event !== "active") return;
 
-  if (event === "install") {
-    const seen = await kv.get(env, `install_${uuid}`);
-    if (!seen) {
-      await kv.put(env, `install_${uuid}`, "1");
-      const total = parseInt(await kv.get(env, "total_installs") || "0") + 1;
-      await kv.put(env, "total_installs", total);
-    }
-  }
+  // Any device that reaches this endpoint is, by definition, an install. Keying on
+  // the "install" event alone made the two numbers able to disagree — a device
+  // whose first request never landed would report itself active every day while
+  // never being counted as installed, which is how the panel ended up showing
+  // more daily actives than installs in total.
+  const installKey = `install_${uuid}`;
+  if (!await kv.get(env, installKey)) await kv.put(env, installKey, "1");
 
-  if (event === "active" || event === "install") {
-    const dauKey = `dau_${today}_${uuid}`;
-    const seen   = await kv.get(env, dauKey);
-    if (!seen) {
-      await kv.put(env, dauKey, "1", { expirationTtl: 172800 });
-      const count = parseInt(await kv.get(env, `dau_count_${today}`) || "0") + 1;
-      await kv.put(env, `dau_count_${today}`, count);
-    }
-  }
+  // Two days of retention so "yesterday" is still countable after midnight.
+  const dauKey = `dau_${iranToday()}_${uuid}`;
+  if (!await kv.get(env, dauKey)) await kv.put(env, dauKey, "1", { expirationTtl: 172800 });
+}
+
+/// Exact count of the keys under a prefix, following the cursor so the answer
+/// stays correct past the 1000-key page limit.
+async function countKeys(env, prefix) {
+  const store = getKV(env);
+  if (!store) return 0;
+
+  let total = 0;
+  let cursor;
+
+  do {
+    const page = await store.list({ prefix, cursor, limit: 1000 });
+    total += page.keys.length;
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+
+  return total;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -732,9 +749,9 @@ async function sendMenu(env, chatId, headerMsg) {
     kv.get(env, "latest_version"),
     kv.get(env, "appstore_url"),
     kv.get(env, "privacy_url"),
-    kv.get(env, "total_installs"),
-    kv.get(env, `dau_count_${today}`),
-    kv.get(env, `dau_count_${yesterday}`),
+    countKeys(env, "install_"),
+    countKeys(env, `dau_${today}_`),
+    countKeys(env, `dau_${yesterday}_`),
     kv.get(env, "force_update"),
   ]);
 

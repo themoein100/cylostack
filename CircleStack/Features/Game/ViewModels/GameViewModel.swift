@@ -164,7 +164,6 @@ class GameViewModel: ObservableObject {
                 if earnedReward {
                     self.freeCoinAdProgress = 0
                     self.store.recordCoinAdClaim()
-                    SoundManager.shared.playPerfect()
 
                     // Present sleek celebration reward dialog!
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {

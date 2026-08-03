@@ -359,7 +359,6 @@ struct GameTab: View {
                     withAnimation(.easeOut(duration: 0.25)) {
                         viewModel.showFreeCoinRewardDialog = false
                     }
-                    SoundManager.shared.playGood()
                 }) {
                     Text("GREAT!")
                         .font(.system(size: 15, weight: .black, design: .rounded))
