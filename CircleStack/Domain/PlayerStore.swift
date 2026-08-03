@@ -174,6 +174,7 @@ final class PlayerStore: ObservableObject {
         totalGames = defaults.integer(forKey: Key.games)
         maxCombo = defaults.integer(forKey: Key.combo)
         lastScore = defaults.integer(forKey: Key.last)
+        gamesSinceRecord = defaults.integer(forKey: Key.dryStreak)
         let storedHue = defaults.double(forKey: Key.lastHue)
         lastRunHue = storedHue == 0 ? 0.52 : CGFloat(storedHue)
 
@@ -274,7 +275,14 @@ final class PlayerStore: ObservableObject {
         }
 
         var outcome = RunOutcome()
-        guard score > bestBeforeRun else { return outcome }
+
+        guard score > bestBeforeRun else {
+            settleDrySpell()
+            return outcome
+        }
+
+        // A record clears the slate: the drought is over.
+        gamesSinceRecord = 0
 
         recordsBeaten += 1
         outcome.isRecord = true
@@ -287,6 +295,54 @@ final class PlayerStore: ObservableObject {
 
         coins += outcome.coinsAwarded
         return outcome
+    }
+
+    // MARK: - Dry spells
+    //
+    // What happens between records, and deliberately without any announcement.
+    // Nothing in the UI reports either side of this — the balance simply moves,
+    // the way a wallet does. Surfacing it would turn a slow background pressure
+    // into a scoreboard the player optimises against.
+    //
+    // The two halves are one mechanism. A run of games with no record slowly
+    // costs, and the longer that run gets the likelier it is to pay instead:
+    // persistence is what earns the payout, and it usually arrives before the
+    // cost bites. Over eight recordless games the expected balance is very
+    // slightly negative — enough to keep the shop meaningful, not enough to
+    // feel like a punishment.
+
+    /// Games played since the last personal best.
+    @Published private(set) var gamesSinceRecord: Int {
+        didSet { defaults.set(gamesSinceRecord, forKey: Key.dryStreak) }
+    }
+
+    /// One coin every eighth recordless game.
+    private static let dryStreakCost = 8
+
+    private func settleDrySpell() {
+        gamesSinceRecord += 1
+
+        // The two are independent on purpose. An earlier version reset the
+        // counter whenever the payout landed, which meant the charge almost
+        // never arrived — even a player who never set a record drifted upward.
+        // The countdown now runs regardless of luck.
+        if rollLuckyPayout() {
+            coins += 2
+        }
+
+        guard gamesSinceRecord % Self.dryStreakCost == 0 else { return }
+        // Never below zero: a player with nothing left has nothing to lose, and
+        // a negative balance would break every affordability check downstream.
+        coins = max(0, coins - 1)
+    }
+
+    /// Rises with the length of the drought, so the players putting the most in
+    /// are the ones most likely to get something back. Tuned so eight recordless
+    /// games come out slightly negative overall — a drift, not a penalty.
+    private func rollLuckyPayout() -> Bool {
+        guard gamesSinceRecord >= 3 else { return false }
+        let chance = min(0.06, 0.02 + 0.005 * Double(gamesSinceRecord - 3))
+        return Double.random(in: 0..<1) < chance
     }
 
     func spendCoins(_ amount: Int) -> Bool {
@@ -370,6 +426,7 @@ final class PlayerStore: ObservableObject {
         static let combo = "cs_max_combo"
         static let last = "cs_last_score"
         static let lastHue = "cs_last_run_hue"
+        static let dryStreak = "cs_games_since_record"
     }
 }
 
