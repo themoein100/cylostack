@@ -141,7 +141,8 @@ struct GameTab: View {
                     onContinueWithCoins: viewModel.canReviveWithCoins ? { viewModel.reviveWithCoins() } : nil,
                     requiredAds: viewModel.requiredAdsForRevive,
                     adsWatched: viewModel.adsWatchedForRevive,
-                    userCoins: store.coins
+                    userCoins: store.coins,
+                    coinReviveCost: viewModel.coinReviveCost
                 )
                 .transition(.scale.combined(with: .opacity))
             }
