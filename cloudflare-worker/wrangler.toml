@@ -1,6 +1,22 @@
 name = "patient-tooth-4146"
 main = "worker.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2026-08-25"
+
+[triggers]
+# The Worker compares this UTC scheduler tick with Asia/Muscat itself, so daily
+# times entered in Telegram always mean the owner's local clock.
+crons = ["* * * * *"]
+
+[[queues.producers]]
+binding = "PUSH_QUEUE"
+queue = "cylostack-push"
+
+[[queues.consumers]]
+queue = "cylostack-push"
+max_batch_size = 25
+max_batch_timeout = 5
+max_retries = 5
+dead_letter_queue = "cylostack-push-dlq"
 
 [[kv_namespaces]]
 binding = "CIRCLESTACK_KV"
@@ -14,3 +30,15 @@ id = "1663757a84224e32951815b783181fec"
 # Set it to "false" once the app is live so only real App Store installs can
 # register — then redeploy.
 APP_ATTEST_ALLOW_DEV = "true"
+# Non-sensitive identifier used by APNs. Keep the Apple key material in Wrangler
+# secrets: APNS_TEAM_ID, APNS_KEY_ID, APNS_PRIVATE_KEY.
+APNS_TOPIC = "com.CyloStack.app"
+# These are identifiers, not credentials. The corresponding private .p8 key is
+# stored separately as the APNS_PRIVATE_KEY Worker secret.
+APNS_TEAM_ID = "HR6SBNSUB5"
+APNS_KEY_ID = "489YN8QCXK"
+PUBLIC_WORKER_URL = "https://patient-tooth-4146.2002-sadraei.workers.dev"
+
+[observability]
+enabled = true
+head_sampling_rate = 1

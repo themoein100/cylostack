@@ -6,5 +6,7 @@
 	<true/>
 	<key>com.apple.developer.devicecheck.appattest-environment</key>
 	<string>development</string>
+	<key>aps-environment</key>
+	<string>development</string>
 </dict>
 </plist>

@@ -8,6 +8,7 @@
 import GameKit
 import SwiftUI
 import Combine
+import Network
 
 class GameCenterManager: NSObject, ObservableObject {
     static let shared = GameCenterManager()
@@ -15,8 +16,36 @@ class GameCenterManager: NSObject, ObservableObject {
     @Published var isAuthenticated = false
     @Published var authViewController: UIViewController?
 
+    /// Scores that Game Center has not accepted yet. Keeping only the highest value
+    /// per leaderboard is enough because these are best-score leaderboards, and it
+    /// avoids replaying a whole history of offline runs when connectivity returns.
+    private let pendingScoresKey = "game_center_pending_best_scores"
+    private let networkMonitor = NWPathMonitor()
+
+    /// The leaderboards that actually exist in App Store Connect. Game Center rejects
+    /// every submission to an ID it does not know, and it does so asynchronously and
+    /// silently, so an unconfigured ID costs a wasted round trip and buries a real
+    /// failure in the log. The per-difficulty boards
+    /// ("cylostack_leaderboard_s<speed>k<shrink>") are not configured yet; add each one
+    /// here as it goes live so the app and App Store Connect stay in step.
+    static let globalLeaderboardID = "cylostack_master_points"
+    static let configuredLeaderboardIDs: Set<String> = [globalLeaderboardID]
+
     override private init() {
         super.init()
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            Task { @MainActor [weak self] in
+                self?.flushQueuedScores()
+            }
+        }
+        // NWPathMonitor requires a dispatch queue. It only observes connectivity;
+        // all game and UI state stays on the main actor above.
+        networkMonitor.start(queue: DispatchQueue(label: "com.cylostack.network-monitor"))
+    }
+
+    deinit {
+        networkMonitor.cancel()
     }
 
     /// Authenticates the local player with Apple Game Center.
@@ -38,6 +67,8 @@ class GameCenterManager: NSObject, ObservableObject {
                     self.isAuthenticated = true
                     self.authViewController = nil
                     self.syncProfileFromGameCenter()
+                    self.syncStoredScores()
+                    self.flushQueuedScores()
                 }
                 Logger.shared.i("GameCenter", "Player authenticated successfully: \(localPlayer.displayName) (ID: \(localPlayer.gamePlayerID))")
             } else {
@@ -101,20 +132,82 @@ class GameCenterManager: NSObject, ObservableObject {
 
     /// Submits a high score to a specific Game Center leaderboard.
     func submitScore(_ score: Int, to leaderboardID: String) {
-        guard isAuthenticated else {
-            Logger.shared.w("GameCenter", "Cannot submit score \(score): Player not authenticated.")
+        guard Self.configuredLeaderboardIDs.contains(leaderboardID) else {
+            Logger.shared.w("GameCenter", "Skipping score \(score): leaderboard \(leaderboardID) is not configured in App Store Connect.")
             return
         }
 
-        Logger.shared.i("GameCenter", "Submitting score \(score) to leaderboard: \(leaderboardID)")
+        queueScore(score, for: leaderboardID)
+        submitQueuedScore(score, to: leaderboardID)
+    }
 
-        GKLeaderboard.submitScore(score, context: 0, player: GKLocalPlayer.local, leaderboardIDs: [leaderboardID]) { error in
+    /// Retry every locally queued best score. This runs after Game Center signs in
+    /// and whenever iOS reports that the device has connectivity again.
+    private func flushQueuedScores() {
+        guard isAuthenticated, GKLocalPlayer.local.isAuthenticated else { return }
+        for (leaderboardID, score) in pendingScores {
+            submitQueuedScore(score, to: leaderboardID)
+        }
+    }
+
+    private var pendingScores: [String: Int] {
+        let raw = UserDefaults.standard.dictionary(forKey: pendingScoresKey) ?? [:]
+        return raw.reduce(into: [:]) { result, entry in
+            if let score = entry.value as? Int, score > 0 {
+                result[entry.key] = score
+            } else if let number = entry.value as? NSNumber, number.intValue > 0 {
+                result[entry.key] = number.intValue
+            }
+        }
+    }
+
+    private func queueScore(_ score: Int, for leaderboardID: String) {
+        guard score > 0 else { return }
+        var queued = pendingScores
+        queued[leaderboardID] = max(queued[leaderboardID] ?? 0, score)
+        UserDefaults.standard.set(queued, forKey: pendingScoresKey)
+    }
+
+    private func removeQueuedScore(_ score: Int, for leaderboardID: String) {
+        var queued = pendingScores
+        // Do not erase a newer record that arrived while this older request was in flight.
+        guard queued[leaderboardID] == score else { return }
+        queued.removeValue(forKey: leaderboardID)
+        UserDefaults.standard.set(queued, forKey: pendingScoresKey)
+    }
+
+    private func submitQueuedScore(_ score: Int, to leaderboardID: String) {
+        guard isAuthenticated, GKLocalPlayer.local.isAuthenticated else {
+            Logger.shared.i("GameCenter", "Score \(score) queued for \(leaderboardID) until Game Center is available.")
+            return
+        }
+
+        Logger.shared.i("GameCenter", "Submitting queued score \(score) to leaderboard: \(leaderboardID)")
+
+        GKLeaderboard.submitScore(score, context: 0, player: GKLocalPlayer.local, leaderboardIDs: [leaderboardID]) { [weak self] error in
             if let error = error {
                 Logger.shared.e("GameCenter", "Failed to submit score to \(leaderboardID): \(error.localizedDescription)")
             } else {
                 Logger.shared.i("GameCenter", "Successfully submitted score \(score) to \(leaderboardID)")
+                Task { @MainActor [weak self] in
+                    self?.removeQueuedScore(score, for: leaderboardID)
+                }
             }
         }
+    }
+
+    /// Game Center might be connected after the player has already completed runs.
+    /// Those runs are stored locally, but submitScore deliberately refuses to send
+    /// anything while unauthenticated. Submit the current aggregate once authentication
+    /// completes so a late Game Center sign-in does not strand valid local progress.
+    private func syncStoredScores() {
+        guard isAuthenticated else { return }
+
+        let score = PlayerStore.shared.totalWeightedScore
+        guard score > 0 else { return }
+
+        Logger.shared.i("GameCenter", "Syncing stored global score \(score) after authentication.")
+        submitScore(score, to: Self.globalLeaderboardID)
     }
 
     // MARK: - Programmatic Leaderboards
@@ -131,7 +224,7 @@ class GameCenterManager: NSObject, ObservableObject {
     @Published var isLoadingScores = false
 
     /// Fetches the top 10 players from the Game Center leaderboard.
-    func fetchTopScores(leaderboardID: String = "cylostack_leaderboard") {
+    func fetchTopScores(leaderboardID: String = GameCenterManager.globalLeaderboardID) {
         guard isAuthenticated else {
             Logger.shared.w("GameCenter", "Cannot fetch scores: Player not authenticated.")
             DispatchQueue.main.async {

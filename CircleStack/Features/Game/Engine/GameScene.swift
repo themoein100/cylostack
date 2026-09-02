@@ -408,6 +408,12 @@ class GameScene: SKScene {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        placeActiveDiscFromPrimaryInput()
+    }
+
+    /// Shared by touch, UIKit key commands, and SpriteKit keyboard input. Keeping the
+    /// debounce here makes Space behave exactly like a mouse or screen tap.
+    func placeActiveDiscFromPrimaryInput() {
         guard isPlaying && !isGameOver else { return }
         let now = CACurrentMediaTime()
         guard now >= lastPlacementTime else { return }
@@ -418,13 +424,8 @@ class GameScene: SKScene {
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         for press in presses {
             if press.key?.keyCode == .keyboardSpacebar || press.key?.characters == " " {
-                if isPlaying && !isGameOver {
-                    let now = CACurrentMediaTime()
-                    guard now >= lastPlacementTime else { return }
-                    lastPlacementTime = now + 0.18
-                    placeActiveDisc()
-                    return
-                }
+                placeActiveDiscFromPrimaryInput()
+                return
             }
         }
         super.pressesBegan(presses, with: event)

@@ -32,7 +32,6 @@ struct GameTab: View {
         self._viewModel = StateObject(wrappedValue: GameViewModel(store: store, selectedBg: selectedBg))
     }
     
-
     var body: some View {
         ZStack {
             if viewModel.isPlayingGame {

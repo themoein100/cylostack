@@ -10,19 +10,21 @@ import UIKit
 import Combine
 import GoogleMobileAds
 import UserMessagingPlatform
+import AppTrackingTransparency
 
 class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
     static let shared = AdMobManager()
 
-    // Google AdMob Interstitial, Rewarded & App Open Test Unit IDs
+    // Debug builds use Google's demo units so development traffic never reaches
+    // the live account; Release (TestFlight and App Store) uses the real ones.
     #if DEBUG
     private let interstitialAdUnitID = "ca-app-pub-3940256099942544/4411468910"
     private let rewardedAdUnitID = "ca-app-pub-3940256099942544/1712485313"
     private let appOpenAdUnitID = "ca-app-pub-3940256099942544/5575463023"
     #else
-    private let interstitialAdUnitID = "ca-app-pub-3940256099942544/4411468910"
-    private let rewardedAdUnitID = "ca-app-pub-3940256099942544/1712485313"
-    private let appOpenAdUnitID = "ca-app-pub-3940256099942544/5575463023"
+    private let interstitialAdUnitID = "ca-app-pub-8353688568048184/4508138481"
+    private let rewardedAdUnitID = "ca-app-pub-8353688568048184/2410136917"
+    private let appOpenAdUnitID = "ca-app-pub-8353688568048184/8255811806"
     #endif
 
     // Interstitial Ad State
@@ -51,6 +53,12 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
     private var onAppOpenAdDismissed: (() -> Void)?
 
     private var cancellables = Set<AnyCancellable>()
+    private var hasStartedSDK = false
+
+    /// True where the law (GDPR) says the player must be able to reopen their
+    /// consent choices at any time. Drives the Privacy Options row in Settings,
+    /// which stays hidden everywhere else.
+    @Published var isPrivacyOptionsRequired: Bool = false
 
     /// Waits for a `@Published` readiness flag to flip true, or gives up after
     /// `timeout`. Whichever happens first, the timer is invalidated and the
@@ -178,7 +186,18 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
             .store(in: &cancellables)
     }
 
+    /// Starts the Mobile Ads SDK — but only once, and only after the consent
+    /// state says we may request ads. Calling it again is a no-op, so every
+    /// path out of the consent flow can call it without double-starting.
     func initialize() {
+        guard !hasStartedSDK else { return }
+
+        guard ConsentInformation.shared.canRequestAds else {
+            Logger.shared.i("AdMobManager", "Consent does not allow ad requests yet. SDK start deferred.")
+            return
+        }
+
+        hasStartedSDK = true
         MobileAds.shared.audioVideoManager.isAudioSessionApplicationManaged = true
         MobileAds.shared.start(completionHandler: { [weak self] status in
             Logger.shared.i("AdMobManager", "AdMob SDK Initialized")
@@ -195,10 +214,28 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
     func requestGDPRConsentIfNeeded(from rootViewController: UIViewController? = nil, completion: @escaping () -> Void) {
         let parameters = RequestParameters()
 
+        #if DEBUG
+        // Flip to true on a Debug build to be treated as an EEA user, so the
+        // consent form and the Privacy Options row can be exercised from here.
+        // Debug-only by construction — Release never sees this branch.
+        let simulateEEAGeography = false
+        if simulateEEAGeography {
+            let debugSettings = DebugSettings()
+            debugSettings.geography = .EEA
+            parameters.debugSettings = debugSettings
+        }
+        #endif
+
         ConsentInformation.shared.requestConsentInfoUpdate(with: parameters) { [weak self] error in
             DispatchQueue.main.async {
                 if let error = error {
+                    // Do not show ATT if UMP did not finish. Otherwise a transient
+                    // network error could put Apple's tracking prompt before the
+                    // GDPR flow, which is the wrong order and confusing for players.
+                    // The next Splash appearance retries the UMP request first.
                     Logger.shared.e("AdMobManager", "GDPR consent info update failed: \(error.localizedDescription)")
+                    self?.refreshPrivacyOptionsRequirement()
+                    self?.initialize()
                     completion()
                     return
                 }
@@ -212,14 +249,66 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
                             Logger.shared.i("AdMobManager", "GDPR consent form handled successfully.")
                         }
 
-                        if ConsentInformation.shared.canRequestAds {
-                            MobileAds.shared.audioVideoManager.isAudioSessionApplicationManaged = true
-                            MobileAds.shared.start(completionHandler: nil)
-                        }
+                        self?.refreshPrivacyOptionsRequirement()
 
-                        completion()
+                        // Apple requires the ATT prompt to come after the UMP
+                        // form, never before it.
+                        self?.requestTrackingAuthorizationIfNeeded {
+                            self?.initialize()
+                            completion()
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    private func refreshPrivacyOptionsRequirement() {
+        isPrivacyOptionsRequired = ConsentInformation.shared.privacyOptionsRequirementStatus == .required
+    }
+
+    /// Reopens the consent form so the player can change or withdraw what they
+    /// agreed to. Consent may go from granted to denied here, so the ad state is
+    /// re-read afterwards rather than assumed.
+    func presentPrivacyOptionsForm(from rootViewController: UIViewController? = nil, completion: (() -> Void)? = nil) {
+        let vc = rootViewController ?? getTopViewController()
+        ConsentForm.presentPrivacyOptionsForm(from: vc) { [weak self] error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    Logger.shared.e("AdMobManager", "Privacy options form failed: \(error.localizedDescription)")
+                } else {
+                    Logger.shared.i("AdMobManager", "Privacy options form dismissed.")
+                }
+
+                self?.refreshPrivacyOptionsRequirement()
+
+                // If consent was only just granted, the SDK may still be waiting
+                // to start; initialize() is a no-op when it already has.
+                self?.initialize()
+                completion?()
+            }
+        }
+    }
+
+    /// Shows Apple's App Tracking Transparency prompt once, if the user has not
+    /// answered it yet. Either answer is fine — the game plays the same, and
+    /// AdMob falls back to non-personalized ads when tracking is denied.
+    private func requestTrackingAuthorizationIfNeeded(completion: @escaping () -> Void) {
+        guard ATTrackingManager.trackingAuthorizationStatus == .notDetermined else {
+            completion()
+            return
+        }
+
+        // The system silently drops the prompt unless the app is foreground-active.
+        guard UIApplication.shared.applicationState == .active else {
+            completion()
+            return
+        }
+
+        ATTrackingManager.requestTrackingAuthorization { status in
+            DispatchQueue.main.async {
+                Logger.shared.i("AdMobManager", "ATT authorization status: \(status.rawValue)")
+                completion()
             }
         }
     }
@@ -227,6 +316,11 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
     // MARK: - Interstitial Ad
 
     func loadInterstitialAd() {
+        guard hasStartedSDK else {
+            Logger.shared.i("AdMobManager", "Interstitial request deferred until consent completes.")
+            return
+        }
+
         guard NetworkMonitor.shared.isConnected else {
             Logger.shared.i("AdMobManager", "Device offline. Skipping interstitial ad load request.")
             isAdReady = false
@@ -295,6 +389,11 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
     // MARK: - Rewarded Ad
 
     func loadRewardedAd() {
+        guard hasStartedSDK else {
+            Logger.shared.i("AdMobManager", "Rewarded request deferred until consent completes.")
+            return
+        }
+
         guard NetworkMonitor.shared.isConnected else {
             Logger.shared.i("AdMobManager", "Device offline. Skipping rewarded ad load request.")
             isRewardedAdReady = false
@@ -376,6 +475,11 @@ class AdMobManager: NSObject, FullScreenContentDelegate, ObservableObject {
     // MARK: - App Open Ad
 
     func loadAppOpenAd() {
+        guard hasStartedSDK else {
+            Logger.shared.i("AdMobManager", "App-open request deferred until consent completes.")
+            return
+        }
+
         guard NetworkMonitor.shared.isConnected else {
             Logger.shared.i("AdMobManager", "Device offline. Skipping app open ad load request.")
             isAppOpenAdReady = false

@@ -9,5 +9,7 @@
 	     but attestation fails and every user silently drops to the weaker fallback. -->
 	<key>com.apple.developer.devicecheck.appattest-environment</key>
 	<string>production</string>
+	<key>aps-environment</key>
+	<string>production</string>
 </dict>
 </plist>

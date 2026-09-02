@@ -124,11 +124,16 @@ struct LeaderboardCardView: View {
                 }
             }
         }
-        .onAppear {
+        // The profile can appear before Game Center finishes its asynchronous
+        // authentication. Tying the fetch to the authentication state makes the
+        // board retry the moment the player is connected instead of remaining
+        // empty until they manually tap refresh.
+        .task(id: gcManager.isAuthenticated) {
+            guard gcManager.isAuthenticated else { return }
             gcManager.fetchTopScores()
         }
         .sheet(isPresented: $showFullLeaderboard) {
-            GameCenterLeaderboardView(leaderboardID: "cylostack_leaderboard")
+            GameCenterLeaderboardView(leaderboardID: GameCenterManager.globalLeaderboardID)
                 .ignoresSafeArea()
         }
     }

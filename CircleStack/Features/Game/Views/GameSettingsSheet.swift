@@ -19,6 +19,8 @@ struct GameSettingsSheet: View {
     
     @ObservedObject private var gcManager = GameCenterManager.shared
     @ObservedObject private var remoteConfig = RemoteConfigManager.shared
+    @ObservedObject private var adMob = AdMobManager.shared
+    @ObservedObject private var pushNotifications = PushNotificationManager.shared
     @State private var showLeaderboard = false
     
     var body: some View {
@@ -35,6 +37,7 @@ struct GameSettingsSheet: View {
                     VStack(spacing: 24) {
                         soundSection
                         leaderboardSection
+                        notificationsSection
                         if !remoteConfig.privacyURL.isEmpty {
                             legalSection
                         }
@@ -59,8 +62,11 @@ struct GameSettingsSheet: View {
             }
         }
         .preferredColorScheme(.dark)
+        .task {
+            await pushNotifications.refreshAuthorizationStatus()
+        }
         .sheet(isPresented: $showLeaderboard) {
-            GameCenterLeaderboardView(leaderboardID: "cylostack_leaderboard")
+            GameCenterLeaderboardView(leaderboardID: GameCenterManager.globalLeaderboardID)
                 .ignoresSafeArea()
         }
     }
@@ -211,6 +217,77 @@ struct GameSettingsSheet: View {
         }
     }
 
+    // MARK: - Notifications
+
+    private var notificationsSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            sectionHeader(icon: "bell.badge.fill", title: "Game Updates", color: .orange)
+
+            settingsCard {
+                HStack(spacing: 14) {
+                    ZStack {
+                        Circle()
+                            .fill(pushNotifications.isEnabled ? Color.orange.opacity(0.18) : Color.white.opacity(0.07))
+                            .frame(width: 40, height: 40)
+                        Image(systemName: pushNotifications.isEnabled ? "bell.fill" : "bell.slash.fill")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundColor(pushNotifications.isEnabled ? .orange : .white.opacity(0.35))
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Game updates")
+                            .font(.system(.body, design: .rounded).weight(.semibold))
+                            .foregroundColor(.white)
+                        Text(notificationSubtitle)
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundColor(.white.opacity(0.45))
+                    }
+
+                    Spacer()
+
+                    Button(action: notificationButtonTapped) {
+                        Text(notificationButtonTitle)
+                            .font(.system(.subheadline, design: .rounded).weight(.bold))
+                            .foregroundColor(pushNotifications.isEnabled ? .white.opacity(0.65) : .black)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(pushNotifications.isEnabled ? Color.white.opacity(0.12) : Color.orange)
+                            .cornerRadius(10)
+                    }
+                    .accessibilityLabel(notificationButtonTitle)
+                }
+                .padding(.vertical, 14)
+                .padding(.horizontal, 16)
+            }
+        }
+    }
+
+    private var notificationSubtitle: String {
+        switch pushNotifications.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            "You’ll receive updates and announcements"
+        case .denied:
+            "Notifications are off in iPhone Settings"
+        case .notDetermined:
+            "Choose when you want to hear from CyloStack"
+        @unknown default:
+            "Notification status is unavailable"
+        }
+    }
+
+    private var notificationButtonTitle: String {
+        pushNotifications.authorizationStatus == .denied ? "Settings" : (pushNotifications.isEnabled ? "On" : "Enable")
+    }
+
+    private func notificationButtonTapped() {
+        if pushNotifications.authorizationStatus == .denied {
+            guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+            UIApplication.shared.open(url)
+            return
+        }
+        Task { await pushNotifications.enableNotifications() }
+    }
+
     // MARK: - Legal Section
 
     /// Sits directly under Rankings: it belongs to the app, not to how the game plays,
@@ -255,6 +332,44 @@ struct GameSettingsSheet: View {
                     .padding(.horizontal, 16)
                 }
                 .buttonStyle(.plain)
+
+                // GDPR gives players the right to change their mind about ad
+                // consent, so this row appears wherever that right applies and
+                // stays hidden everywhere else — Google decides which is which.
+                if adMob.isPrivacyOptionsRequired {
+                    Divider().background(Color.white.opacity(0.07)).padding(.horizontal, 16)
+
+                    Button(action: { adMob.presentPrivacyOptionsForm() }) {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.blue.opacity(0.18))
+                                    .frame(width: 40, height: 40)
+                                Image(systemName: "hand.raised.fill")
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .foregroundColor(.blue)
+                            }
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Ad Privacy Settings")
+                                    .font(.system(.body, design: .rounded).weight(.semibold))
+                                    .foregroundColor(.white)
+                                Text("Change your consent choices")
+                                    .font(.system(.caption, design: .rounded))
+                                    .foregroundColor(.white.opacity(0.45))
+                            }
+
+                            Spacer()
+
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(.white.opacity(0.25))
+                        }
+                        .padding(.vertical, 14)
+                        .padding(.horizontal, 16)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
     }

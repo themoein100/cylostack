@@ -6,19 +6,38 @@
 //
 
 import UIKit
+import UserNotifications
 
 @main
-class AppDelegate: UIResponder, UIApplicationDelegate {
+class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
 
 
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Ensure ambient audio session so background music (Spotify/Apple Music) keeps playing seamlessly
         SoundManager.shared.configureAudioSession()
-        
-        // Initialize AdMob SDK
-        AdMobManager.shared.initialize()
+        UNUserNotificationCenter.current().delegate = self
+
+        // All first-run permission prompts are sequenced from SplashView: GDPR,
+        // then ATT, then notifications. Starting one here races the GDPR form.
         return true
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        PushNotificationManager.shared.didRegister(deviceToken: deviceToken)
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        PushNotificationManager.shared.didFailToRegister(error: error)
+    }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        PushNotificationManager.shared.clearBadge()
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound, .badge]
     }
 
     // MARK: UISceneSession Lifecycle
@@ -37,4 +56,3 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
 
 }
-

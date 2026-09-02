@@ -124,8 +124,10 @@ actor AppAttestService {
             return (keyID: encodedKeyID, assertion: encodedAssertion, challenge: challenge)
         } catch {
             Logger.shared.e("AppAttest", "Could not generate assertion: \(error.localizedDescription)")
-            // A key the system no longer recognises has to be replaced.
-            UserDefaults.standard.removeObject(forKey: attestedDefault)
+            // A failed assertion can mean the Secure Enclave has not finished
+            // activating a just-attested key, or that it no longer recognises it.
+            // Either way that key cannot safely be reused for a new attestation.
+            invalidateRegistration()
             return nil
         }
     }

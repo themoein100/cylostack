@@ -100,23 +100,29 @@ struct SplashView: View {
                 }
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                AdMobManager.shared.requestGDPRConsentIfNeeded {
-                    let wantsAppOpenAd = RemoteConfigManager.shared.areAdsEnabled
-                        && RemoteConfigManager.shared.isAppOpenAdEnabled
+            // Start UMP immediately. Delaying this behind the splash animation made
+            // the GDPR form feel late, especially on a cold network connection.
+            AdMobManager.shared.requestGDPRConsentIfNeeded {
+                // `requestGDPRConsentIfNeeded` reaches this completion only after
+                // its GDPR → ATT sequence has finished. Notification permission is
+                // intentionally last so no system alert can overtake the tracking
+                // prompt on a fresh install.
+                PushNotificationManager.shared.requestAuthorizationOnFirstLaunchOfCurrentVersion()
 
-                    guard wantsAppOpenAd else {
+                let wantsAppOpenAd = RemoteConfigManager.shared.areAdsEnabled
+                    && RemoteConfigManager.shared.isAppOpenAdEnabled
+
+                guard wantsAppOpenAd else {
+                    dismiss()
+                    return
+                }
+
+                AdMobManager.shared.waitForAppOpenAdOrTimeout(maxWaitDuration: 4.0) { hasAd in
+                    guard hasAd else {
                         dismiss()
                         return
                     }
-
-                    AdMobManager.shared.waitForAppOpenAdOrTimeout(maxWaitDuration: 4.0) { hasAd in
-                        guard hasAd else {
-                            dismiss()
-                            return
-                        }
-                        AdMobManager.shared.showAppOpenAd { dismiss() }
-                    }
+                    AdMobManager.shared.showAppOpenAd { dismiss() }
                 }
             }
         }

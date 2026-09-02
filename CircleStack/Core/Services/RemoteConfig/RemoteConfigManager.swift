@@ -36,61 +36,9 @@ class RemoteConfigManager: ObservableObject {
         }
     }
 
-    private var pollTimer: Timer?
-
     private init() {
         // Load cached settings instantly from local storage (0ms startup latency)
         loadCachedConfig()
-        // Start live auto-polling & foreground refresh for sub-second updates!
-        setupAutoRefresh()
-    }
-
-    /// How often the config is re-fetched while the app is in the foreground.
-    ///
-    /// This used to be 10 seconds, which cost every player a request every 10s for as
-    /// long as they had the app open — real battery and data for a config that changes
-    /// a few times a month. The foreground refresh below is what actually makes a
-    /// panel change land immediately, so the timer only needs to be a slow backstop.
-    private let pollInterval: TimeInterval = 120.0
-
-    /// Listens for app foreground transitions and polls periodically for live updates
-    private func setupAutoRefresh() {
-        // Fetch instantly whenever app comes back from background (e.g. after using Telegram)
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.willEnterForegroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.fetchRemoteConfig()
-        }
-
-        // Stop polling in the background — the timer would otherwise keep firing during
-        // the brief window before suspension and again on every resume.
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.pollTimer?.invalidate()
-            self?.pollTimer = nil
-        }
-
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.startPolling()
-        }
-
-        startPolling()
-    }
-
-    private func startPolling() {
-        pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
-            self?.fetchRemoteConfig()
-        }
     }
 
     /// Loads locally cached settings so app never waits for network at launch
@@ -156,32 +104,12 @@ class RemoteConfigManager: ObservableObject {
         let endpoint = remoteConfigURL
         let uuid = deviceUUID ?? ""
 
-        // App Attest proves the request came from a real, unmodified install; the
-        // shared-key signature is the fallback for the Simulator and older devices.
-        Task {
-            let attested = await AppAttestService.shared.assertion(
-                endpoint: endpoint, event: eventType, uuid: uuid
-            )
-
-            // The shared-key signature always rides along, even when an assertion is
-            // attached. If the server cannot verify the attestation — a key it has
-            // forgotten, a format change — the request still authenticates instead
-            // of failing outright and leaving the app with no config at all.
-            var items = RemoteConfigCrypto.signedQueryItems(event: eventType, uuid: uuid)
-
-            if let attested = attested {
-                items += [
-                    URLQueryItem(name: "keyId", value: attested.keyID),
-                    URLQueryItem(name: "assertion", value: attested.assertion),
-                    URLQueryItem(name: "challenge", value: attested.challenge),
-                ]
-            }
-
-            await MainActor.run {
-                self.send(endpoint: endpoint, items: items, attested: attested != nil,
-                          eventType: eventType, completion: completion)
-            }
-        }
+        // Remote config is already HMAC-signed and contains no player-specific
+        // data. Re-attesting every poll created several KV writes per player every
+        // two minutes, so App Attest remains reserved for sensitive operations such
+        // as registering a device-addressable push token.
+        let items = RemoteConfigCrypto.signedQueryItems(event: eventType, uuid: uuid)
+        send(endpoint: endpoint, items: items, attested: false, eventType: eventType, completion: completion)
     }
 
     private func send(endpoint: String, items: [URLQueryItem], attested: Bool,

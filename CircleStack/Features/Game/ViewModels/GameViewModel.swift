@@ -109,7 +109,7 @@ class GameViewModel: ObservableObject {
         }
     }
 
-    /// نمایش دکمه: فقط اینترنت وصل + تبلیغات ریموت روشن (نیازی به لود تبلیغ نیست)
+
     var canShowAdReviveButton: Bool {
         RemoteConfigManager.shared.areAdsEnabled &&
         RemoteConfigManager.shared.isRewardedAdEnabled &&
@@ -117,7 +117,7 @@ class GameViewModel: ObservableObject {
         requiredAdsForRevive > 0
     }
 
-    /// تبلیغ واقعاً آماده‌ی پخش است (برای اجرا)
+    
     var canReviveWithAd: Bool {
         canShowAdReviveButton && AdMobManager.shared.isRewardedAdReady
     }
@@ -306,7 +306,7 @@ class GameViewModel: ObservableObject {
         // up. The per-difficulty board still ranks the raw run at that one setting.
         // (recordRun above has already folded this run into bestScores, so the weighted
         // total reflects it.)
-        let globalLeaderboardID = "cylostack_leaderboard"
+        let globalLeaderboardID = GameCenterManager.globalLeaderboardID
         let difficultyLeaderboardID = "cylostack_leaderboard_s\(store.speedLevel)k\(store.shrinkLevel)"
         GameCenterManager.shared.submitScore(store.totalWeightedScore, to: globalLeaderboardID)
         GameCenterManager.shared.submitScore(finalScore, to: difficultyLeaderboardID)
